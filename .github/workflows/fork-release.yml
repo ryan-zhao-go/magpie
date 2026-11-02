@@ -36,7 +36,7 @@ jobs:
           git fetch --force --tags upstream main
           upstream_sha=$(git rev-parse upstream/main)
           patch_sha=$(git rev-parse HEAD)
-          upstream_version=$(git tag --merged upstream/main --list 'v[0-9]*' --sort=-version:refname | head -1)
+          upstream_version=$(git tag --merged upstream/main --list 'v[0-9]*' --sort=-version:refname | sed -n '1p')
           test -n "$upstream_version"
           fork/release-meta.sh "$upstream_version" "$upstream_sha" "$patch_sha" "$(date -u +%Y%m%d%H%M%S)"
           printf 'upstream_sha=%s\npatch_sha=%s\n' "$upstream_sha" "$patch_sha" >>"$GITHUB_OUTPUT"
