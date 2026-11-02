@@ -3,14 +3,19 @@
 This directory keeps the answer-timeout patch on current upstream Magpie
 without letting Magpie's official updater replace it. The scheduled workflow
 rebases the patch branch in a disposable runner, tests that tree, and publishes
-an immutable Linux ARM64 release. It never force-pushes the patch branch.
+an immutable Linux ARM64 release. It also atomically publishes the latest
+verified assets on the dedicated `fork-dist` branch for hosts that can reach
+`raw.githubusercontent.com` but not GitHub's Release web endpoint. It never
+force-pushes the patch branch; only the generated `fork-dist` snapshot is
+replaced.
 
 The dev updater accepts only the two exact assets under
-`ryan-zhao-go/magpie/releases`, verifies SHA-256, stops the daemon before the
-atomic replacement, and starts it again. Stopping first matters: an official
-update already staged by the old process may install while it exits, before
-the fork binary is put in place. A failed start, health check, or post-start
-digest check restores `~/.local/bin/magpie.previous`.
+`https://raw.githubusercontent.com/ryan-zhao-go/magpie/fork-dist`, verifies
+SHA-256, stops the daemon before the atomic replacement, and starts it again.
+Stopping first matters: an official update already staged by the old process
+may install while it exits, before the fork binary is put in place. A failed
+start, health check, or post-start digest check restores
+`~/.local/bin/magpie.previous`.
 
 ## Bootstrap dev
 
@@ -23,7 +28,8 @@ magpie update auto
 ```
 
 Download the updater and units from the newest fork Release on a trusted
-computer, or copy the reviewed files from this repository. Install them:
+computer, from the generated `fork-dist` snapshot, or copy the reviewed files
+from this repository. Install them:
 
 ```sh
 install -d -m 700 "$HOME/.local/libexec" "$HOME/.config/systemd/user"
@@ -40,7 +46,8 @@ systemctl --user list-timers magpie-fork-update.timer
 
 The first update deliberately causes one brief gateway restart. Later checks
 do not restart when the installed digest already matches the newest Release.
-The timer repairs `magpie update auto off` on every run.
+The Release and `fork-dist` snapshot contain the same tested bytes. The timer
+repairs `magpie update auto off` on every run.
 
 ## Recovery
 
