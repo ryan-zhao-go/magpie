@@ -1,0 +1,145 @@
+name: Fork release
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PATCH_BRANCH: feature/answer-timeout
+  UPSTREAM_REPOSITORY: yetone/magpie
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+
+      - name: Identify sources and release
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/$UPSTREAM_REPOSITORY.git"
+          git fetch --force --tags upstream main
+          upstream_sha=$(git rev-parse upstream/main)
+          patch_sha=$(git rev-parse HEAD)
+          upstream_version=$(git tag --merged upstream/main --list 'v[0-9]*' --sort=-version:refname | head -1)
+          test -n "$upstream_version"
+          fork/release-meta.sh "$upstream_version" "$upstream_sha" "$patch_sha" "$(date -u +%Y%m%d%H%M%S)"
+          printf 'upstream_sha=%s\npatch_sha=%s\n' "$upstream_sha" "$patch_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Check for an existing immutable release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'skip=true' >>"$GITHUB_OUTPUT"
+          else
+            echo 'skip=false' >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Replay the patch on current upstream
+        if: steps.existing.outputs.skip != 'true'
+        shell: bash
+        run: |
+          git config user.name magpie-fork-release
+          git config user.email magpie-fork-release@users.noreply.github.com
+          git rebase upstream/main
+
+      - uses: actions/setup-go@v5
+        if: steps.existing.outputs.skip != 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Test answer-timeout configuration
+        if: steps.existing.outputs.skip != 'true'
+        run: go test -count=1 -timeout 5m ./internal/provider -run '^TestGroupAnswerTimeoutSaved$'
+
+      - name: Test answer-timeout gateway behavior and races
+        if: steps.existing.outputs.skip != 'true'
+        run: go test -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout)'
+
+      - uses: actions/setup-node@v4
+        if: steps.existing.outputs.skip != 'true'
+        with:
+          node-version: 22
+
+      - name: Install browser test runtime
+        if: steps.existing.outputs.skip != 'true'
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.62.1
+          npx playwright install --with-deps chromium webkit
+
+      - name: Test routing UI in Chromium and WebKit
+        if: steps.existing.outputs.skip != 'true'
+        run: node --test --test-concurrency=1 internal/gui/tests/group-answer-timeout.test.cjs
+
+      - name: Build Linux ARM64 release
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          make release-cli TARGETS=linux/arm64 VERSION="$VERSION"
+          cd dist
+          sha256sum magpie-cli-linux-arm64 >magpie-cli-linux-arm64.sha256
+          cp ../fork/magpie-fork-update .
+          cp ../fork/systemd/magpie-fork-update.service .
+          cp ../fork/systemd/magpie-fork-update.timer .
+
+      - name: Preserve the exact tested source as a tag
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        shell: bash
+        run: |
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git tag "$RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+
+      - name: Publish fork release
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
+          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
+          PATCH_SHA: ${{ steps.meta.outputs.patch_sha }}
+        shell: bash
+        run: |
+          cat >release-notes.md <<EOF
+          Automated answer-timeout fork build.
+
+          - Upstream: \`yetone/magpie@$UPSTREAM_SHA\`
+          - Patch branch: \`ryan-zhao-go/magpie@$PATCH_SHA\`
+          - Tests: focused provider configuration, gateway answer predicates/fallback/races, and the routing UI in Chromium and WebKit
+
+          The Linux ARM64 binary is verified on dev by the attached SHA-256 sidecar before installation.
+          EOF
+          gh release create "$RELEASE_TAG" \
+            dist/magpie-cli-linux-arm64 \
+            dist/magpie-cli-linux-arm64.sha256 \
+            dist/magpie-fork-update \
+            dist/magpie-fork-update.service \
+            dist/magpie-fork-update.timer \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --latest \
+            --title "$RELEASE_NAME" \
+            --notes-file release-notes.md
