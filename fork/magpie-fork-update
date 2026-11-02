@@ -26,6 +26,31 @@ hash_file() {
   fi
 }
 
+download_release_asset() {
+  local output=$1 max_time=$2 url=$3 edge
+  local -a curl_args=(
+    -fsSL --proto '=https' --tlsv1.2
+    --connect-timeout 15 --max-time "$max_time"
+    --output "$output"
+  )
+
+  if curl "${curl_args[@]}" "$url"; then
+    return 0
+  fi
+  rm -f "$output"
+
+  # Some ByteDance hosts resolve github.com to an unreachable regional edge,
+  # while GitHub's release asset hosts remain reachable. Keep TLS verification
+  # for github.com and retry only the initial hop through known GitHub edges.
+  for edge in 140.82.112.3 140.82.116.3; do
+    if curl "${curl_args[@]}" --resolve "github.com:443:$edge" "$url"; then
+      return 0
+    fi
+    rm -f "$output"
+  done
+  return 1
+}
+
 case "$health_tries:$health_delay" in
   *[!0-9:]*|:*|*:)
     printf 'invalid health retry settings\n' >&2
@@ -75,10 +100,8 @@ case "$tmp" in
   *) printf 'unexpected temporary directory: %s\n' "$tmp" >&2; exit 1 ;;
 esac
 
-curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 \
-  --output "$tmp/$asset_name" "$latest/$asset_name"
-curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 \
-  --output "$tmp/$checksum_name" "$latest/$checksum_name"
+download_release_asset "$tmp/$asset_name" 300 "$latest/$asset_name"
+download_release_asset "$tmp/$checksum_name" 120 "$latest/$checksum_name"
 
 read -r expected_digest expected_name extra <"$tmp/$checksum_name" || true
 expected_name=${expected_name#\*}
