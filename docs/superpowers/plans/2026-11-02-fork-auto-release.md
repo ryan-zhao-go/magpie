@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Continuously rebuild the answer-timeout fork on current upstream `main`, publish a verified Linux ARM64 release, and update the dev daemon automatically with rollback.
+**Goal:** Continuously rebuild the answer-timeout fork on current upstream `main`, publish a verified Linux AMD64 release, and update the dev daemon automatically with rollback.
 
 **Architecture:** A scheduled GitHub Actions workflow checks out the fork patch branch, rebases it ephemerally onto `yetone/magpie/main`, runs the answer-timeout and configuration tests, cross-builds the CLI, and publishes an immutable fork release with a SHA-256 file. A user-level systemd timer downloads only that named asset from the public fork, verifies its digest, atomically replaces the daemon binary, and restores the previous binary if the restarted gateway does not pass `magpie healthcheck`.
 
@@ -13,7 +13,7 @@
 - The official Magpie updater must be disabled on dev before any service restart.
 - The workflow must never push a rebase or force-push the patch branch.
 - A rebase conflict, failed test, or failed build publishes nothing.
-- Releases must contain `magpie-cli-linux-arm64` and `magpie-cli-linux-arm64.sha256`.
+- Releases must contain `magpie-cli-linux-amd64` and `magpie-cli-linux-amd64.sha256`.
 - The updater must accept only HTTPS GitHub API/download URLs for `ryan-zhao-go/magpie` and the exact asset names above.
 - Installation must use temp-file plus atomic rename, retain one last-known-good binary, and roll it back after failed restart or health check.
 - The existing provider configuration and routing member order must not be changed.
@@ -95,7 +95,7 @@
 
 - [ ] **Step 3: Add release gates**
 
-  Install Go and Bun, run provider answer-timeout tests, the focused gateway answer-timeout suite, the routing UI test in Chromium and WebKit, then build `GOOS=linux GOARCH=arm64` with the generated fork version.
+  Install Go and Bun, run provider answer-timeout tests, the focused gateway answer-timeout suite, the routing UI test in Chromium and WebKit, then build `GOOS=linux GOARCH=amd64` with the generated fork version.
 
 - [ ] **Step 4: Publish immutable assets**
 
