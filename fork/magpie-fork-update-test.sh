@@ -44,6 +44,11 @@ setup_case() {
     cd "$case_dir/fixtures"
     fixture_checksum magpie-cli-linux-arm64 >magpie-cli-linux-arm64.sha256
   )
+  fixture_digest=$(fixture_checksum "$case_dir/fixtures/magpie-cli-linux-arm64" | awk '{print $1}')
+  fixture_size=$(wc -c <"$case_dir/fixtures/magpie-cli-linux-arm64" | tr -d ' ')
+  printf '{"token":"fixture-token"}\n' >"$case_dir/fixtures/token.json"
+  printf '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.magpie.binary","digest":"sha256:%s","size":%s}]}\n' \
+    "$fixture_digest" "$fixture_size" >"$case_dir/fixtures/manifest.json"
   cat >"$case_dir/fixtures/release.json" <<'EOF'
 {"tag_name":"fork-v0.1.2732-good","assets":[
   {"name":"magpie-cli-linux-arm64","browser_download_url":"https://github.com/ryan-zhao-go/magpie/releases/download/fork-v0.1.2732-good/magpie-cli-linux-arm64"},
@@ -58,6 +63,7 @@ url=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output|-o) out=$2; shift 2 ;;
+    --header|-H) shift 2 ;;
     --resolve) shift 2 ;;
     -*) shift ;;
     *) url=$1; shift ;;
@@ -65,13 +71,13 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$out" ] && [ -n "$url" ]
 case "$url" in
-  https://api.github.com/repos/ryan-zhao-go/magpie/releases/latest)
-    exit 22 ;;
-  https://raw.githubusercontent.com/ryan-zhao-go/magpie/fork-dist/magpie-cli-linux-arm64.sha256)
-    cp "$FIXTURE_DIR/magpie-cli-linux-arm64.sha256" "$out" ;;
-  https://raw.githubusercontent.com/ryan-zhao-go/magpie/fork-dist/magpie-cli-linux-arm64)
+  'https://ghcr.io/token?scope=repository:ryan-zhao-go/magpie-fork:pull&service=ghcr.io')
+    cp "$FIXTURE_DIR/token.json" "$out" ;;
+  https://ghcr.io/v2/ryan-zhao-go/magpie-fork/manifests/latest)
+    cp "$FIXTURE_DIR/manifest.json" "$out" ;;
+  https://ghcr.io/v2/ryan-zhao-go/magpie-fork/blobs/sha256:*)
     cp "$FIXTURE_DIR/magpie-cli-linux-arm64" "$out" ;;
-  https://github.com/*)
+  https://github.com/*|https://raw.githubusercontent.com/*|https://api.github.com/*)
     exit 28 ;;
   *) exit 22 ;;
 esac
@@ -113,10 +119,10 @@ export STAGED_OFFICIAL=$case_dir/fixtures/official
 [ "$("$bin" version)" = new ] || fail "the fork did not replace an official update staged on stop"
 [ "$("$bin.previous" version)" = old ] || fail "the staged official binary replaced the last-known-good fork"
 
-setup_case bad-checksum
-printf '%064d  magpie-cli-linux-arm64\n' 0 >"$FIXTURE_DIR/magpie-cli-linux-arm64.sha256"
-if "$updater" >/dev/null 2>&1; then fail "a bad checksum was accepted"; fi
-[ "$("$bin" version)" = old ] || fail "a bad checksum changed the binary"
+setup_case bad-oci-digest
+sed -i.bak "s/sha256:[0-9a-f]\\{64\\}/sha256:$(printf '%064d' 0)/" "$FIXTURE_DIR/manifest.json"
+if "$updater" >/dev/null 2>&1; then fail "a bad OCI digest was accepted"; fi
+[ "$("$bin" version)" = old ] || fail "a bad OCI digest changed the binary"
 
 setup_case rollback
 make_binary "$FIXTURE_DIR/magpie-cli-linux-arm64" broken 0
@@ -124,6 +130,10 @@ make_binary "$FIXTURE_DIR/magpie-cli-linux-arm64" broken 0
   cd "$FIXTURE_DIR"
   fixture_checksum magpie-cli-linux-arm64 >magpie-cli-linux-arm64.sha256
 )
+fixture_digest=$(fixture_checksum "$FIXTURE_DIR/magpie-cli-linux-arm64" | awk '{print $1}')
+fixture_size=$(wc -c <"$FIXTURE_DIR/magpie-cli-linux-arm64" | tr -d ' ')
+printf '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.magpie.binary","digest":"sha256:%s","size":%s}]}\n' \
+  "$fixture_digest" "$fixture_size" >"$FIXTURE_DIR/manifest.json"
 if "$updater" >/dev/null 2>&1; then fail "an unhealthy release was accepted"; fi
 [ "$("$bin" version)" = old ] || fail "health failure did not restore the old binary"
 [ "$(cat "$SYSTEMCTL_LOG")" = $'--user stop magpie.service\n--user start magpie.service\n--user stop magpie.service\n--user start magpie.service' ] || fail "rollback did not stop and start the service"
