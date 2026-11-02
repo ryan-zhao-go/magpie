@@ -3,6 +3,7 @@ set -euo pipefail
 
 image=ryan-zhao-go/magpie-fork
 asset_name=magpie-cli-linux-amd64
+blob_name=$asset_name.gz
 token_url="https://ghcr.io/token?scope=repository:$image:pull&service=ghcr.io"
 manifest_url="https://ghcr.io/v2/$image/manifests/latest"
 bin=${MAGPIE_BIN:-$HOME/.local/bin/magpie}
@@ -31,7 +32,7 @@ download_release_asset() {
   shift 3
   curl \
     -fsSL --proto '=https' --tlsv1.2 \
-    --http1.1 --retry 3 --retry-delay 2 --retry-all-errors --remove-on-error \
+    --http1.1 --retry 3 --retry-delay 2 --retry-all-errors \
     --connect-timeout 15 --max-time "$max_time" \
     "$@" \
     --output "$output" \
@@ -64,7 +65,7 @@ cleanup() {
     systemctl --user start "$service" >/dev/null 2>&1 || true
   fi
   if [[ -n $tmp ]]; then
-    rm -f "$tmp/$asset_name" "$tmp/token.json" "$tmp/manifest.json" "$tmp/meta" "$tmp/previous"
+    rm -f "$tmp/$asset_name" "$tmp/$blob_name" "$tmp/token.json" "$tmp/manifest.json" "$tmp/meta" "$tmp/previous"
     rmdir "$tmp" 2>/dev/null || true
   fi
   rmdir "$lock" 2>/dev/null || true
@@ -112,7 +113,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     manifest = json.load(stream)
 layers = [
     layer for layer in manifest.get("layers", [])
-    if layer.get("mediaType") == "application/vnd.magpie.binary"
+    if layer.get("mediaType") == "application/vnd.magpie.binary.gzip"
 ]
 if len(layers) != 1:
     raise SystemExit("expected exactly one Magpie binary layer")
@@ -132,27 +133,30 @@ if [[ -n ${extra:-} ]]; then
 fi
 expected_digest=${layer_digest#sha256:}
 blob_url="https://ghcr.io/v2/$image/blobs/$layer_digest"
-download_release_asset "$tmp/$asset_name" 300 "$blob_url" \
+download_release_asset "$tmp/$blob_name" 1500 "$blob_url" \
+  --continue-at - \
   --header "Authorization: Bearer $token"
 
-actual_digest=$(hash_file "$tmp/$asset_name")
+actual_digest=$(hash_file "$tmp/$blob_name")
 if [[ $actual_digest != "$expected_digest" ]]; then
   printf 'OCI digest mismatch for the latest fork release\n' >&2
   exit 1
 fi
-actual_size=$(wc -c <"$tmp/$asset_name" | tr -d ' ')
+actual_size=$(wc -c <"$tmp/$blob_name" | tr -d ' ')
 if [[ $actual_size != "$layer_size" ]]; then
   printf 'OCI size mismatch for the latest fork release\n' >&2
   exit 1
 fi
+gzip -dc "$tmp/$blob_name" >"$tmp/$asset_name"
 chmod 0755 "$tmp/$asset_name"
 if ! "$tmp/$asset_name" version >/dev/null 2>&1; then
   printf 'the latest fork binary is not executable on this host\n' >&2
   exit 1
 fi
+release_digest=$(hash_file "$tmp/$asset_name")
 
 current_digest=$(hash_file "$bin")
-if [[ $current_digest == "$expected_digest" ]]; then
+if [[ $current_digest == "$release_digest" ]]; then
   printf 'magpie fork already matches the latest release\n'
   exit 0
 fi
@@ -182,7 +186,7 @@ for ((i = 0; i < health_tries; i++)); do
   sleep "$health_delay"
 done
 installed_digest=$(hash_file "$bin")
-if [[ $healthy -ne 1 || $installed_digest != "$expected_digest" ]]; then
+if [[ $healthy -ne 1 || $installed_digest != "$release_digest" ]]; then
   printf 'the latest fork release failed health or changed during restart; restoring the previous binary\n' >&2
   exit 1
 fi
