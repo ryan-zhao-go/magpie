@@ -91,14 +91,14 @@ jobs:
         if: steps.existing.outputs.skip != 'true'
         run: node --test --test-concurrency=1 internal/gui/tests/group-answer-timeout.test.cjs
 
-      - name: Build Linux ARM64 release
+      - name: Build Linux AMD64 release
         if: steps.existing.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          make release-cli TARGETS=linux/arm64 VERSION="$VERSION"
+          make release-cli TARGETS=linux/amd64 VERSION="$VERSION"
           cd dist
-          sha256sum magpie-cli-linux-arm64 >magpie-cli-linux-arm64.sha256
+          sha256sum magpie-cli-linux-amd64 >magpie-cli-linux-amd64.sha256
           cp ../fork/magpie-fork-update .
           cp ../fork/systemd/magpie-fork-update.service .
           cp ../fork/systemd/magpie-fork-update.timer .
@@ -131,11 +131,11 @@ jobs:
           - Patch branch: \`ryan-zhao-go/magpie@$PATCH_SHA\`
           - Tests: focused provider configuration, gateway answer predicates/fallback/races, and the routing UI in Chromium and WebKit
 
-          The Linux ARM64 binary is verified on dev by the attached SHA-256 sidecar before installation.
+          The Linux AMD64 binary is verified on dev by the attached SHA-256 sidecar before installation.
           EOF
           gh release create "$RELEASE_TAG" \
-            dist/magpie-cli-linux-arm64 \
-            dist/magpie-cli-linux-arm64.sha256 \
+            dist/magpie-cli-linux-amd64 \
+            dist/magpie-cli-linux-amd64.sha256 \
             dist/magpie-fork-update \
             dist/magpie-fork-update.service \
             dist/magpie-fork-update.timer \
@@ -160,6 +160,6 @@ jobs:
           oras push "ghcr.io/ryan-zhao-go/magpie-fork:$VERSION" \
             --artifact-type application/vnd.magpie.fork.v1 \
             --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            dist/magpie-cli-linux-arm64:application/vnd.magpie.binary
+            dist/magpie-cli-linux-amd64:application/vnd.magpie.binary
           oras tag "ghcr.io/ryan-zhao-go/magpie-fork:$VERSION" latest
           oras logout ghcr.io

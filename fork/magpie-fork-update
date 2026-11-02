@@ -2,7 +2,7 @@
 set -euo pipefail
 
 image=ryan-zhao-go/magpie-fork
-asset_name=magpie-cli-linux-arm64
+asset_name=magpie-cli-linux-amd64
 token_url="https://ghcr.io/token?scope=repository:$image:pull&service=ghcr.io"
 manifest_url="https://ghcr.io/v2/$image/manifests/latest"
 bin=${MAGPIE_BIN:-$HOME/.local/bin/magpie}
@@ -146,6 +146,10 @@ if [[ $actual_size != "$layer_size" ]]; then
   exit 1
 fi
 chmod 0755 "$tmp/$asset_name"
+if ! "$tmp/$asset_name" version >/dev/null 2>&1; then
+  printf 'the latest fork binary is not executable on this host\n' >&2
+  exit 1
+fi
 
 current_digest=$(hash_file "$bin")
 if [[ $current_digest == "$expected_digest" ]]; then
