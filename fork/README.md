@@ -8,12 +8,13 @@ public OCI artifact at `ghcr.io/ryan-zhao-go/magpie-fork:latest` for hosts that
 cannot reach GitHub's Release web endpoint. It never force-pushes the patch
 branch.
 
-The dev updater accepts only the `application/vnd.magpie.binary` layer from
-that exact GHCR repository, verifies its OCI SHA-256 digest and size, stops the
-daemon before the atomic replacement, and starts it again. Stopping first
-matters: an official update already staged by the old process may install
-while it exits, before the fork binary is put in place. A failed start, health
-check, or post-start digest check restores `~/.local/bin/magpie.previous`.
+The dev updater accepts only the `application/vnd.magpie.binary.gzip` layer
+from that exact GHCR repository, verifies its compressed OCI SHA-256 digest
+and size, decompresses and preflights the candidate, then stops the daemon for
+the atomic replacement and starts it again. Stopping first matters: an
+official update already staged by the old process may install while it exits,
+before the fork binary is put in place. A failed start, health check, or
+post-start digest check restores `~/.local/bin/magpie.previous`.
 
 ## Bootstrap dev
 
