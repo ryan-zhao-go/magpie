@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=%h/.local/libexec/magpie-fork-update
-TimeoutStartSec=10min
+TimeoutStartSec=30min
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
