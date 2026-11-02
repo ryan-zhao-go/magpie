@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo=ryan-zhao-go/magpie
+image=ryan-zhao-go/magpie-fork
 asset_name=magpie-cli-linux-arm64
-checksum_name=$asset_name.sha256
-latest=https://raw.githubusercontent.com/$repo/fork-dist
+token_url="https://ghcr.io/token?scope=repository:$image:pull&service=ghcr.io"
+manifest_url="https://ghcr.io/v2/$image/manifests/latest"
 bin=${MAGPIE_BIN:-$HOME/.local/bin/magpie}
 service=${MAGPIE_SERVICE:-magpie.service}
 health_tries=${MAGPIE_HEALTH_TRIES:-20}
@@ -28,10 +28,12 @@ hash_file() {
 
 download_release_asset() {
   local output=$1 max_time=$2 url=$3
+  shift 3
   curl \
     -fsSL --proto '=https' --tlsv1.2 \
     --http1.1 --retry 3 --retry-delay 2 --retry-all-errors --remove-on-error \
     --connect-timeout 15 --max-time "$max_time" \
+    "$@" \
     --output "$output" \
     "$url"
 }
@@ -62,7 +64,7 @@ cleanup() {
     systemctl --user start "$service" >/dev/null 2>&1 || true
   fi
   if [[ -n $tmp ]]; then
-    rm -f "$tmp/$asset_name" "$tmp/$checksum_name" "$tmp/release.json" "$tmp/meta" "$tmp/previous"
+    rm -f "$tmp/$asset_name" "$tmp/token.json" "$tmp/manifest.json" "$tmp/meta" "$tmp/previous"
     rmdir "$tmp" 2>/dev/null || true
   fi
   rmdir "$lock" 2>/dev/null || true
@@ -85,22 +87,62 @@ case "$tmp" in
   *) printf 'unexpected temporary directory: %s\n' "$tmp" >&2; exit 1 ;;
 esac
 
-download_release_asset "$tmp/$asset_name" 300 "$latest/$asset_name"
-download_release_asset "$tmp/$checksum_name" 120 "$latest/$checksum_name"
+download_release_asset "$tmp/token.json" 60 "$token_url"
+token=$(python3 - "$tmp/token.json" <<'PY'
+import json
+import sys
 
-read -r expected_digest expected_name extra <"$tmp/$checksum_name" || true
-expected_name=${expected_name#\*}
-if [[ ! $expected_digest =~ ^[0-9a-f]{64}$ || $expected_name != "$asset_name" || -n ${extra:-} ]]; then
-  printf 'invalid checksum file in the latest fork release\n' >&2
+with open(sys.argv[1], encoding="utf-8") as stream:
+    token = json.load(stream).get("token", "")
+if not isinstance(token, str) or not token or "\n" in token or "\r" in token:
+    raise SystemExit("invalid anonymous GHCR token response")
+print(token)
+PY
+)
+
+download_release_asset "$tmp/manifest.json" 60 "$manifest_url" \
+  --header "Authorization: Bearer $token" \
+  --header 'Accept: application/vnd.oci.image.manifest.v1+json'
+layer_meta=$(python3 - "$tmp/manifest.json" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    manifest = json.load(stream)
+layers = [
+    layer for layer in manifest.get("layers", [])
+    if layer.get("mediaType") == "application/vnd.magpie.binary"
+]
+if len(layers) != 1:
+    raise SystemExit("expected exactly one Magpie binary layer")
+digest = layers[0].get("digest", "")
+size = layers[0].get("size", 0)
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit("invalid Magpie binary layer digest")
+if not isinstance(size, int) or size < 1:
+    raise SystemExit("invalid Magpie binary layer size")
+print(digest, size)
+PY
+)
+read -r layer_digest layer_size extra <<<"$layer_meta"
+if [[ -n ${extra:-} ]]; then
+  printf 'invalid Magpie binary layer metadata\n' >&2
   exit 1
 fi
+expected_digest=${layer_digest#sha256:}
+blob_url="https://ghcr.io/v2/$image/blobs/$layer_digest"
+download_release_asset "$tmp/$asset_name" 300 "$blob_url" \
+  --header "Authorization: Bearer $token"
+
 actual_digest=$(hash_file "$tmp/$asset_name")
 if [[ $actual_digest != "$expected_digest" ]]; then
-  printf 'checksum mismatch for the latest fork release\n' >&2
+  printf 'OCI digest mismatch for the latest fork release\n' >&2
   exit 1
 fi
-if [[ ! -s $tmp/$asset_name ]]; then
-  printf 'empty binary in the latest fork release\n' >&2
+actual_size=$(wc -c <"$tmp/$asset_name" | tr -d ' ')
+if [[ $actual_size != "$layer_size" ]]; then
+  printf 'OCI size mismatch for the latest fork release\n' >&2
   exit 1
 fi
 chmod 0755 "$tmp/$asset_name"
