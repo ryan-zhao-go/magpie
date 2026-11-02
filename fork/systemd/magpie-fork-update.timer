@@ -1,0 +1,12 @@
+[Unit]
+Description=Check the Magpie answer-timeout fork for updates
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=magpie-fork-update.service
+
+[Install]
+WantedBy=timers.target
