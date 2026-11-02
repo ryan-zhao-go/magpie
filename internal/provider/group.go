@@ -198,6 +198,10 @@ type Group struct {
 	// waits as long as it takes. The last one left is always waited for,
 	// and the slow one doesn't rest.
 	FirstToken int `json:"firstToken,omitempty"`
+	// AnswerTimeout is how many seconds a non-final member may run without
+	// answer text or a tool call before the next member is asked. Reasoning
+	// does not count. Zero waits; the last member is always waited for.
+	AnswerTimeout int `json:"answerTimeout,omitempty"`
 	// Patience is how many seconds more a request may be kept, once every
 	// member has failed and nothing of a reply has been sent, for the
 	// members that failed in a way that passes —
@@ -1409,6 +1413,7 @@ func SaveGroup(g Group) error {
 		g.Name = g.ID
 	}
 	g.FirstToken = max(g.FirstToken, 0)
+	g.AnswerTimeout = max(g.AnswerTimeout, 0)
 	if g.Patience < 0 {
 		g.Patience = PatienceOff
 	}
