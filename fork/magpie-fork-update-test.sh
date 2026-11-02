@@ -65,10 +65,10 @@ done
 [ -n "$out" ] && [ -n "$url" ]
 case "$url" in
   https://api.github.com/repos/ryan-zhao-go/magpie/releases/latest)
-    cp "$FIXTURE_DIR/release.json" "$out" ;;
-  */magpie-cli-linux-arm64.sha256)
+    exit 22 ;;
+  https://github.com/ryan-zhao-go/magpie/releases/latest/download/magpie-cli-linux-arm64.sha256)
     cp "$FIXTURE_DIR/magpie-cli-linux-arm64.sha256" "$out" ;;
-  */magpie-cli-linux-arm64)
+  https://github.com/ryan-zhao-go/magpie/releases/latest/download/magpie-cli-linux-arm64)
     cp "$FIXTURE_DIR/magpie-cli-linux-arm64" "$out" ;;
   *) exit 22 ;;
 esac
@@ -109,17 +109,6 @@ export STAGED_OFFICIAL=$case_dir/fixtures/official
 "$updater"
 [ "$("$bin" version)" = new ] || fail "the fork did not replace an official update staged on stop"
 [ "$("$bin.previous" version)" = old ] || fail "the staged official binary replaced the last-known-good fork"
-
-setup_case malformed-json
-printf '{' >"$FIXTURE_DIR/release.json"
-if "$updater" >/dev/null 2>&1; then fail "malformed release JSON was accepted"; fi
-[ "$("$bin" version)" = old ] || fail "malformed JSON changed the binary"
-
-setup_case wrong-url
-sed 's#https://github.com/ryan-zhao-go/magpie/#https://example.com/ryan-zhao-go/magpie/#g' "$FIXTURE_DIR/release.json" >"$FIXTURE_DIR/release.bad"
-mv "$FIXTURE_DIR/release.bad" "$FIXTURE_DIR/release.json"
-if "$updater" >/dev/null 2>&1; then fail "a foreign download URL was accepted"; fi
-[ "$("$bin" version)" = old ] || fail "a foreign URL changed the binary"
 
 setup_case bad-checksum
 printf '%064d  magpie-cli-linux-arm64\n' 0 >"$FIXTURE_DIR/magpie-cli-linux-arm64.sha256"
