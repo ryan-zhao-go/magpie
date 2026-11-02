@@ -55,29 +55,24 @@ EOF
 set -eu
 out=
 url=
-resolve=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output|-o) out=$2; shift 2 ;;
-    --resolve) resolve=$2; shift 2 ;;
+    --resolve) shift 2 ;;
     -*) shift ;;
     *) url=$1; shift ;;
   esac
 done
 [ -n "$out" ] && [ -n "$url" ]
-if [ "${REQUIRE_GITHUB_RESOLVE:-}" ] && [ "${url#https://github.com/}" != "$url" ]; then
-  case "$resolve" in
-    github.com:443:140.82.112.3|github.com:443:140.82.116.3) ;;
-    *) exit 28 ;;
-  esac
-fi
 case "$url" in
   https://api.github.com/repos/ryan-zhao-go/magpie/releases/latest)
     exit 22 ;;
-  https://github.com/ryan-zhao-go/magpie/releases/latest/download/magpie-cli-linux-arm64.sha256)
+  https://raw.githubusercontent.com/ryan-zhao-go/magpie/fork-dist/magpie-cli-linux-arm64.sha256)
     cp "$FIXTURE_DIR/magpie-cli-linux-arm64.sha256" "$out" ;;
-  https://github.com/ryan-zhao-go/magpie/releases/latest/download/magpie-cli-linux-arm64)
+  https://raw.githubusercontent.com/ryan-zhao-go/magpie/fork-dist/magpie-cli-linux-arm64)
     cp "$FIXTURE_DIR/magpie-cli-linux-arm64" "$out" ;;
+  https://github.com/*)
+    exit 28 ;;
   *) exit 22 ;;
 esac
 EOF
@@ -99,7 +94,6 @@ EOF
   export SYSTEMCTL_LOG=$case_dir/systemctl.log
   export PATH=$case_dir/mock-bin:/usr/bin:/bin
   unset STAGED_OFFICIAL
-  unset REQUIRE_GITHUB_RESOLVE
 }
 
 setup_case success
@@ -111,11 +105,6 @@ setup_case success
 before=$(wc -l <"$SYSTEMCTL_LOG")
 "$updater"
 [ "$(wc -l <"$SYSTEMCTL_LOG")" -eq "$before" ] || fail "an unchanged release restarted the service"
-
-setup_case github-dns-fallback
-export REQUIRE_GITHUB_RESOLVE=1
-"$updater"
-[ "$("$bin" version)" = new ] || fail "GitHub DNS failure did not fall back to a reachable edge"
 
 setup_case staged-official
 make_binary "$case_dir/fixtures/official" official 1
