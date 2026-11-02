@@ -69,11 +69,11 @@ jobs:
 
       - name: Test answer-timeout configuration
         if: steps.existing.outputs.skip != 'true'
-        run: go test -count=1 -timeout 5m ./internal/provider -run '^TestGroupAnswerTimeoutSaved$'
+        run: go test -tags nogui -count=1 -timeout 5m ./internal/provider -run '^TestGroupAnswerTimeoutSaved$'
 
       - name: Test answer-timeout gateway behavior and races
         if: steps.existing.outputs.skip != 'true'
-        run: go test -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout)'
+        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout)'
 
       - uses: actions/setup-node@v4
         if: steps.existing.outputs.skip != 'true'
