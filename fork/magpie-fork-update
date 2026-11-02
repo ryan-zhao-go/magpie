@@ -2,9 +2,9 @@
 set -euo pipefail
 
 repo=ryan-zhao-go/magpie
-api=https://api.github.com/repos/$repo/releases/latest
 asset_name=magpie-cli-linux-arm64
 checksum_name=$asset_name.sha256
+latest=https://github.com/$repo/releases/latest/download
 bin=${MAGPIE_BIN:-$HOME/.local/bin/magpie}
 service=${MAGPIE_SERVICE:-magpie.service}
 health_tries=${MAGPIE_HEALTH_TRIES:-20}
@@ -75,66 +75,31 @@ case "$tmp" in
   *) printf 'unexpected temporary directory: %s\n' "$tmp" >&2; exit 1 ;;
 esac
 
-curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 \
-  --output "$tmp/release.json" "$api"
-python3 - "$tmp/release.json" >"$tmp/meta" <<'PY'
-import json
-import re
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as src:
-    release = json.load(src)
-tag = release.get("tag_name")
-if not isinstance(tag, str) or not re.fullmatch(r"fork-v[0-9A-Za-z._-]+", tag):
-    raise SystemExit("latest release has an invalid fork tag")
-assets = release.get("assets")
-if not isinstance(assets, list):
-    raise SystemExit("latest release has no assets")
-wanted = ("magpie-cli-linux-arm64", "magpie-cli-linux-arm64.sha256")
-urls = []
-for name in wanted:
-    found = [a.get("browser_download_url") for a in assets if isinstance(a, dict) and a.get("name") == name]
-    if len(found) != 1 or not isinstance(found[0], str):
-        raise SystemExit(f"latest release must have exactly one {name}")
-    urls.append(found[0])
-print(tag)
-print(*urls, sep="\n")
-PY
-
-tag=$(sed -n '1p' "$tmp/meta")
-asset_url=$(sed -n '2p' "$tmp/meta")
-checksum_url=$(sed -n '3p' "$tmp/meta")
-prefix=https://github.com/$repo/releases/download/$tag/
-if [[ $asset_url != "$prefix$asset_name" || $checksum_url != "$prefix$checksum_name" ]]; then
-  printf 'latest release points outside the fork release: %s\n' "$tag" >&2
-  exit 1
-fi
-
 curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 \
-  --output "$tmp/$asset_name" "$asset_url"
+  --output "$tmp/$asset_name" "$latest/$asset_name"
 curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 \
-  --output "$tmp/$checksum_name" "$checksum_url"
+  --output "$tmp/$checksum_name" "$latest/$checksum_name"
 
 read -r expected_digest expected_name extra <"$tmp/$checksum_name" || true
 expected_name=${expected_name#\*}
 if [[ ! $expected_digest =~ ^[0-9a-f]{64}$ || $expected_name != "$asset_name" || -n ${extra:-} ]]; then
-  printf 'invalid checksum file in %s\n' "$tag" >&2
+  printf 'invalid checksum file in the latest fork release\n' >&2
   exit 1
 fi
 actual_digest=$(hash_file "$tmp/$asset_name")
 if [[ $actual_digest != "$expected_digest" ]]; then
-  printf 'checksum mismatch for %s\n' "$tag" >&2
+  printf 'checksum mismatch for the latest fork release\n' >&2
   exit 1
 fi
 if [[ ! -s $tmp/$asset_name ]]; then
-  printf 'empty binary in %s\n' "$tag" >&2
+  printf 'empty binary in the latest fork release\n' >&2
   exit 1
 fi
 chmod 0755 "$tmp/$asset_name"
 
 current_digest=$(hash_file "$bin")
 if [[ $current_digest == "$expected_digest" ]]; then
-  printf 'magpie fork is already %s\n' "$tag"
+  printf 'magpie fork already matches the latest release\n'
   exit 0
 fi
 
@@ -164,9 +129,9 @@ for ((i = 0; i < health_tries; i++)); do
 done
 installed_digest=$(hash_file "$bin")
 if [[ $healthy -ne 1 || $installed_digest != "$expected_digest" ]]; then
-  printf 'fork release %s failed health or changed during restart; restoring the previous binary\n' "$tag" >&2
+  printf 'the latest fork release failed health or changed during restart; restoring the previous binary\n' >&2
   exit 1
 fi
 
 rollback_needed=0
-printf 'installed magpie fork %s\n' "$tag"
+printf 'installed the latest magpie fork release\n'
