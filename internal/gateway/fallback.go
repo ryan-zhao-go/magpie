@@ -70,6 +70,10 @@ type candidate struct {
 	// member is in that sets one (#2246): a group in a group times its own
 	// members' first tokens, the group asked for only those that set none
 	firstToken int
+	// answerTimeout is the AnswerTimeout of the innermost group of those
+	// the member is in that sets one. It applies only while another
+	// candidate remains; reasoning does not satisfy it.
+	answerTimeout int
 	// patience is the Patience of the innermost group of those the member
 	// is in that sets one (#2410): a group in a group waits out its own
 	// members' busy failures, the group asked for only those that set none;
@@ -639,6 +643,17 @@ func innerFirstToken(m provider.Member) int {
 	return 0
 }
 
+// innerAnswerTimeout is the AnswerTimeout of the innermost group m is in
+// (m.Via, the outermost first) that sets one, 0 for none.
+func innerAnswerTimeout(m provider.Member) int {
+	for i := len(m.Via) - 1; i >= 0; i-- {
+		if m.Via[i].AnswerTimeout > 0 {
+			return m.Via[i].AnswerTimeout
+		}
+	}
+	return 0
+}
+
 // innerPatience is the Patience of the innermost group m is in (m.Via,
 // the outermost first) that sets one (#2410), 0 for none: PatienceOff
 // (-1) counts as set, so an inner Off stops replan for that member.
@@ -681,6 +696,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 			for i := range l {
 				l[i].effort, l[i].levels, l[i].fast = m.Effort, m.Levels, m.Fast
 				l[i].firstToken = innerFirstToken(m)
+				l[i].answerTimeout = innerAnswerTimeout(m)
 				l[i].patience = innerPatience(m)
 				if len(m.Path) > 0 {
 					l[i].member = m.Path[0]
@@ -2120,6 +2136,11 @@ type holdWriter struct {
 	// takes; slow says it took longer, and was let go with nothing sent
 	firstWait time.Duration
 	slow      bool
+	// answerWait is how long a non-final try may run without answer text
+	// or a client tool call. Reasoning stays held and does not satisfy it.
+	answerWait     time.Duration
+	answered       bool
+	answerTimedOut bool
 
 	// loop reads a streamed reply for a loop it won't leave (#1359), nil
 	// when Settings' NoLoopGuard is on or the agent asked for no stream;
@@ -2171,6 +2192,10 @@ func (h *holdWriter) onLoop(f func(loopTrip) bool) {
 // errSlowStart is what a try's writes get once it was let go for taking
 // longer than its group waits for a first token.
 var errSlowStart = errors.New("let go: no first token in time")
+
+// errAnswerTimeout is what a try's writes get once it was let go without
+// answer text or a tool call in its group's answer window.
+var errAnswerTimeout = errors.New("let go: no answer text or tool call in time")
 
 // errLooped is what a try's writes get once its reply was ended for
 // looping (cutLoop).
@@ -2248,6 +2273,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	defer h.mu.Unlock()
 	if h.slow {
 		return 0, errSlowStart
+	}
+	if h.answerTimedOut {
+		return 0, errAnswerTimeout
 	}
 	if h.looped != "" || h.relooped {
 		return 0, errLooped
@@ -2583,6 +2611,9 @@ func (h *holdWriter) scan() {
 			break
 		}
 		h.scanned += end
+		if h.answerWait > 0 && !h.answered && answerKind(rest[:end]) {
+			h.answered = true
+		}
 		switch kind, status, msg := streamEvent(rest[:end]); kind {
 		case eventLead:
 			continue
@@ -2590,7 +2621,7 @@ func (h *holdWriter) scan() {
 			h.buffered = true
 			continue
 		case eventThinking:
-			if h.thinkingShown && !h.wantWhole {
+			if h.thinkingShown && !h.wantWhole && !(h.answerWait > 0 && !h.answered) {
 				h.thoughtThrough = h.hold
 				h.flow()
 				return
@@ -2616,6 +2647,9 @@ func (h *holdWriter) scan() {
 				return
 			}
 			continue // content, held with the rest (whole)
+		}
+		if h.answerWait > 0 && !h.answered {
+			continue // reasoning and framing stay private until an answer
 		}
 		h.flow()
 		return
@@ -2650,11 +2684,17 @@ func (h *holdWriter) scan() {
 	if waiting {
 		longest = max(longest, h.firstWait+time.Second)
 	}
+	waitingAnswer := h.answerWait > 0 && !h.answered
+	if waitingAnswer {
+		longest = max(longest, h.answerWait+time.Second)
+	}
 	if h.held.Len() > holdMost || time.Since(h.since) > longest {
-		h.flow()
+		if !waitingAnswer {
+			h.flow()
+		}
 		return
 	}
-	if (h.thinking || h.buffered || waiting || h.keptQuiet()) && (time.Since(h.since) >= keepHeldAfter || h.alive != nil && h.alive.sent) {
+	if (h.thinking || h.buffered || waiting || waitingAnswer || h.keptQuiet()) && (time.Since(h.since) >= keepHeldAfter || h.alive != nil && h.alive.sent) {
 		h.keepAlive()
 	}
 }
@@ -2929,6 +2969,13 @@ func (h *holdWriter) settle() {
 			return
 		}
 	}
+	if h.answerWait > 0 && h.status < 400 {
+		if wholeAnswer(h.alive.proto, h.held.Bytes()) {
+			h.answered = true
+		} else {
+			h.answerTimedOut = true
+		}
+	}
 	if h.alive != nil && h.alive.sent && h.status < 400 && wholeEvents(h.alive.proto, h.held.Bytes()) == nil {
 		// a 200 that is no reply of the protocol's, once the agent has a
 		// stream's headers: it can't go as that stream, so it failed, as
@@ -3075,17 +3122,23 @@ func (h *holdWriter) keepQueued() func() {
 // has.
 func (h *holdWriter) watch() func() {
 	first := h.firstWait > 0 && h.stop != nil
-	if !first && !h.streams {
+	answer := h.answerWait > 0 && h.stop != nil
+	if !first && !answer && !h.streams {
 		return func() {}
 	}
 	done, over := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(over)
-		var deadline <-chan time.Time
+		var firstDeadline, answerDeadline <-chan time.Time
 		if first {
 			t := time.NewTimer(h.firstWait)
 			defer t.Stop()
-			deadline = t.C
+			firstDeadline = t.C
+		}
+		if answer {
+			t := time.NewTimer(h.answerWait)
+			defer t.Stop()
+			answerDeadline = t.C
 		}
 		tick := time.NewTicker(watchEvery)
 		defer tick.Stop()
@@ -3104,7 +3157,10 @@ func (h *holdWriter) watch() func() {
 				if first && h.started() {
 					first = false
 				}
-				if !first && !h.streams {
+				if answer && (h.answered || h.passing || h.failure != 0) {
+					answer = false
+				}
+				if !first && !answer && !h.streams {
 					h.mu.Unlock()
 					return
 				}
@@ -3115,8 +3171,8 @@ func (h *holdWriter) watch() func() {
 					h.keepQuiet()
 				}
 				h.mu.Unlock()
-			case <-deadline:
-				deadline = nil
+			case <-firstDeadline:
+				firstDeadline = nil
 				if !first {
 					continue
 				}
@@ -3130,6 +3186,22 @@ func (h *holdWriter) watch() func() {
 					return
 				}
 				first = false
+			case <-answerDeadline:
+				answerDeadline = nil
+				if !answer {
+					continue
+				}
+				h.mu.Lock()
+				if !h.answered && !h.passing && h.failure == 0 {
+					h.answerTimedOut = true
+				}
+				timedOut := h.answerTimedOut
+				h.mu.Unlock()
+				if timedOut {
+					h.stop()
+					return
+				}
+				answer = false
 			}
 		}
 	}()
