@@ -4,7 +4,7 @@ set -euo pipefail
 repo=ryan-zhao-go/magpie
 asset_name=magpie-cli-linux-arm64
 checksum_name=$asset_name.sha256
-latest=https://github.com/$repo/releases/latest/download
+latest=https://raw.githubusercontent.com/$repo/fork-dist
 bin=${MAGPIE_BIN:-$HOME/.local/bin/magpie}
 service=${MAGPIE_SERVICE:-magpie.service}
 health_tries=${MAGPIE_HEALTH_TRIES:-20}
@@ -27,28 +27,13 @@ hash_file() {
 }
 
 download_release_asset() {
-  local output=$1 max_time=$2 url=$3 edge
-  local -a curl_args=(
-    -fsSL --proto '=https' --tlsv1.2
-    --connect-timeout 15 --max-time "$max_time"
-    --output "$output"
-  )
-
-  if curl "${curl_args[@]}" "$url"; then
-    return 0
-  fi
-  rm -f "$output"
-
-  # Some ByteDance hosts resolve github.com to an unreachable regional edge,
-  # while GitHub's release asset hosts remain reachable. Keep TLS verification
-  # for github.com and retry only the initial hop through known GitHub edges.
-  for edge in 140.82.112.3 140.82.116.3; do
-    if curl "${curl_args[@]}" --resolve "github.com:443:$edge" "$url"; then
-      return 0
-    fi
-    rm -f "$output"
-  done
-  return 1
+  local output=$1 max_time=$2 url=$3
+  curl \
+    -fsSL --proto '=https' --tlsv1.2 \
+    --http1.1 --retry 3 --retry-delay 2 --retry-all-errors --remove-on-error \
+    --connect-timeout 15 --max-time "$max_time" \
+    --output "$output" \
+    "$url"
 }
 
 case "$health_tries:$health_delay" in
