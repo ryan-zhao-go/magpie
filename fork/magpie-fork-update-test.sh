@@ -20,6 +20,14 @@ fixture_checksum() {
   fi
 }
 
+refresh_fixture_manifest() {
+  local binary=$1 manifest=$2 digest size
+  digest=$(fixture_checksum "$binary" | awk '{print $1}')
+  size=$(wc -c <"$binary" | tr -d ' ')
+  printf '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.magpie.binary","digest":"sha256:%s","size":%s}]}\n' \
+    "$digest" "$size" >"$manifest"
+}
+
 make_binary() {
   local path=$1 marker=$2 healthy=$3
   cat >"$path" <<EOF
@@ -39,20 +47,17 @@ setup_case() {
   mkdir -p "$case_dir/home/.local/bin" "$case_dir/fixtures" "$case_dir/mock-bin"
   bin=$case_dir/home/.local/bin/magpie
   make_binary "$bin" old 1
-  make_binary "$case_dir/fixtures/magpie-cli-linux-arm64" new 1
+  make_binary "$case_dir/fixtures/magpie-cli-linux-amd64" new 1
   (
     cd "$case_dir/fixtures"
-    fixture_checksum magpie-cli-linux-arm64 >magpie-cli-linux-arm64.sha256
+    fixture_checksum magpie-cli-linux-amd64 >magpie-cli-linux-amd64.sha256
   )
-  fixture_digest=$(fixture_checksum "$case_dir/fixtures/magpie-cli-linux-arm64" | awk '{print $1}')
-  fixture_size=$(wc -c <"$case_dir/fixtures/magpie-cli-linux-arm64" | tr -d ' ')
   printf '{"token":"fixture-token"}\n' >"$case_dir/fixtures/token.json"
-  printf '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.magpie.binary","digest":"sha256:%s","size":%s}]}\n' \
-    "$fixture_digest" "$fixture_size" >"$case_dir/fixtures/manifest.json"
+  refresh_fixture_manifest "$case_dir/fixtures/magpie-cli-linux-amd64" "$case_dir/fixtures/manifest.json"
   cat >"$case_dir/fixtures/release.json" <<'EOF'
 {"tag_name":"fork-v0.1.2732-good","assets":[
-  {"name":"magpie-cli-linux-arm64","browser_download_url":"https://github.com/ryan-zhao-go/magpie/releases/download/fork-v0.1.2732-good/magpie-cli-linux-arm64"},
-  {"name":"magpie-cli-linux-arm64.sha256","browser_download_url":"https://github.com/ryan-zhao-go/magpie/releases/download/fork-v0.1.2732-good/magpie-cli-linux-arm64.sha256"}
+  {"name":"magpie-cli-linux-amd64","browser_download_url":"https://github.com/ryan-zhao-go/magpie/releases/download/fork-v0.1.2732-good/magpie-cli-linux-amd64"},
+  {"name":"magpie-cli-linux-amd64.sha256","browser_download_url":"https://github.com/ryan-zhao-go/magpie/releases/download/fork-v0.1.2732-good/magpie-cli-linux-amd64.sha256"}
 ]}
 EOF
   cat >"$case_dir/mock-bin/curl" <<'EOF'
@@ -76,7 +81,7 @@ case "$url" in
   https://ghcr.io/v2/ryan-zhao-go/magpie-fork/manifests/latest)
     cp "$FIXTURE_DIR/manifest.json" "$out" ;;
   https://ghcr.io/v2/ryan-zhao-go/magpie-fork/blobs/sha256:*)
-    cp "$FIXTURE_DIR/magpie-cli-linux-arm64" "$out" ;;
+    cp "$FIXTURE_DIR/magpie-cli-linux-amd64" "$out" ;;
   https://github.com/*|https://raw.githubusercontent.com/*|https://api.github.com/*)
     exit 28 ;;
   *) exit 22 ;;
@@ -124,16 +129,21 @@ sed -i.bak "s/sha256:[0-9a-f]\\{64\\}/sha256:$(printf '%064d' 0)/" "$FIXTURE_DIR
 if "$updater" >/dev/null 2>&1; then fail "a bad OCI digest was accepted"; fi
 [ "$("$bin" version)" = old ] || fail "a bad OCI digest changed the binary"
 
+setup_case incompatible-binary
+printf 'not a Linux executable\n' >"$FIXTURE_DIR/magpie-cli-linux-amd64"
+chmod +x "$FIXTURE_DIR/magpie-cli-linux-amd64"
+refresh_fixture_manifest "$FIXTURE_DIR/magpie-cli-linux-amd64" "$FIXTURE_DIR/manifest.json"
+if "$updater" >/dev/null 2>&1; then fail "an incompatible binary was accepted"; fi
+[ ! -e "$SYSTEMCTL_LOG" ] || fail "an incompatible binary stopped or started the service"
+[ "$("$bin" version)" = old ] || fail "an incompatible binary changed the installed binary"
+
 setup_case rollback
-make_binary "$FIXTURE_DIR/magpie-cli-linux-arm64" broken 0
+make_binary "$FIXTURE_DIR/magpie-cli-linux-amd64" broken 0
 (
   cd "$FIXTURE_DIR"
-  fixture_checksum magpie-cli-linux-arm64 >magpie-cli-linux-arm64.sha256
+  fixture_checksum magpie-cli-linux-amd64 >magpie-cli-linux-amd64.sha256
 )
-fixture_digest=$(fixture_checksum "$FIXTURE_DIR/magpie-cli-linux-arm64" | awk '{print $1}')
-fixture_size=$(wc -c <"$FIXTURE_DIR/magpie-cli-linux-arm64" | tr -d ' ')
-printf '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.magpie.binary","digest":"sha256:%s","size":%s}]}\n' \
-  "$fixture_digest" "$fixture_size" >"$FIXTURE_DIR/manifest.json"
+refresh_fixture_manifest "$FIXTURE_DIR/magpie-cli-linux-amd64" "$FIXTURE_DIR/manifest.json"
 if "$updater" >/dev/null 2>&1; then fail "an unhealthy release was accepted"; fi
 [ "$("$bin" version)" = old ] || fail "health failure did not restore the old binary"
 [ "$(cat "$SYSTEMCTL_LOG")" = $'--user stop magpie.service\n--user start magpie.service\n--user stop magpie.service\n--user start magpie.service' ] || fail "rollback did not stop and start the service"
