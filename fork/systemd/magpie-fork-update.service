@@ -1,0 +1,17 @@
+[Unit]
+Description=Update Magpie from the verified answer-timeout fork
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/magpie-fork-update
+TimeoutStartSec=10min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/bin %h/.config/magpie
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
