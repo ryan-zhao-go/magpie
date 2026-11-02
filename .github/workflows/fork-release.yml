@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   PATCH_BRANCH: feature/answer-timeout
@@ -144,27 +145,21 @@ jobs:
             --title "$RELEASE_NAME" \
             --notes-file release-notes.md
 
-      - name: Publish latest verified dev snapshot
+      - uses: oras-project/setup-oras@v1
+        if: steps.existing.outputs.skip != 'true'
+
+      - name: Publish latest verified dev artifact
         if: steps.existing.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.meta.outputs.version }}
-          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
-          PATCH_SHA: ${{ steps.meta.outputs.patch_sha }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          publish_dir=$(mktemp -d)
-          cp dist/magpie-cli-linux-arm64 dist/magpie-cli-linux-arm64.sha256 "$publish_dir/"
-          cp dist/magpie-fork-update dist/magpie-fork-update.service dist/magpie-fork-update.timer "$publish_dir/"
-          printf 'VERSION=%s\nUPSTREAM_SHA=%s\nPATCH_SHA=%s\n' \
-            "$VERSION" "$UPSTREAM_SHA" "$PATCH_SHA" >"$publish_dir/SOURCE"
-          git -C "$publish_dir" init
-          git -C "$publish_dir" config user.name magpie-fork-release
-          git -C "$publish_dir" config user.email magpie-fork-release@users.noreply.github.com
-          git -C "$publish_dir" switch --orphan fork-dist
-          git -C "$publish_dir" add .
-          git -C "$publish_dir" commit -m "Publish $VERSION"
-          git -C "$publish_dir" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          auth_header=$(git config --local --get-all http.https://github.com/.extraheader)
-          git -C "$publish_dir" config http.https://github.com/.extraheader "$auth_header"
-          git -C "$publish_dir" push --force origin HEAD:refs/heads/fork-dist
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          oras push "ghcr.io/ryan-zhao-go/magpie-fork:$VERSION" \
+            --artifact-type application/vnd.magpie.fork.v1 \
+            --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            dist/magpie-cli-linux-arm64:application/vnd.magpie.binary
+          oras tag "ghcr.io/ryan-zhao-go/magpie-fork:$VERSION" latest
+          oras logout ghcr.io
