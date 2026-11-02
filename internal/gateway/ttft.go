@@ -177,6 +177,96 @@ func firstKind(ev []byte) (content, text bool) {
 	return
 }
 
+// answerKind says whether an event carries answer text or begins/carries a
+// client tool call. Reasoning of every kind is deliberately not an answer.
+func answerKind(ev []byte) bool {
+	_, text, _, _ := timingKind(ev)
+	if text {
+		return true
+	}
+	var name string
+	var data []byte
+	for _, ln := range bytes.Split(ev, []byte("\n")) {
+		ln = bytes.TrimRight(ln, "\r")
+		switch {
+		case bytes.HasPrefix(ln, []byte("event:")):
+			name = string(bytes.TrimSpace(ln[6:]))
+		case bytes.HasPrefix(ln, []byte("data:")):
+			data = append(data, bytes.TrimSpace(ln[5:])...)
+		}
+	}
+	if len(data) == 0 {
+		return false
+	}
+	var v struct {
+		Type         string `json:"type"`
+		ContentBlock *struct {
+			Type string `json:"type"`
+		} `json:"content_block"`
+		Item *struct {
+			Type string `json:"type"`
+		} `json:"item"`
+		Choices []struct {
+			Delta struct {
+				ToolCalls    json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage `json:"function_call"`
+			} `json:"delta"`
+		} `json:"choices"`
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					FunctionCall json.RawMessage `json:"functionCall"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if json.Unmarshal(data, &v) != nil {
+		return false
+	}
+	typ := v.Type
+	if typ == "" {
+		typ = name
+	}
+	if typ == "response.function_call_arguments.delta" || typ == "response.custom_tool_call_input.delta" {
+		return true
+	}
+	if v.Item != nil && (v.Item.Type == "function_call" || v.Item.Type == "custom_tool_call") {
+		return true
+	}
+	if v.ContentBlock != nil && v.ContentBlock.Type == "tool_use" {
+		return true
+	}
+	for _, c := range v.Choices {
+		if filled(c.Delta.ToolCalls) || filled(c.Delta.FunctionCall) {
+			return true
+		}
+	}
+	for _, c := range v.Candidates {
+		for _, p := range c.Content.Parts {
+			if filled(p.FunctionCall) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// wholeAnswer applies the stream predicate to a held whole JSON reply by
+// converting it through the same protocol adapters used for whole-as-stream.
+func wholeAnswer(proto provider.Protocol, body []byte) bool {
+	for _, e := range wholeEvents(proto, body) {
+		data, err := json.Marshal(e.data)
+		if err != nil {
+			continue
+		}
+		ev := append([]byte("event: "+e.name+"\ndata: "), data...)
+		if answerKind(ev) {
+			return true
+		}
+	}
+	return false
+}
+
 func timingKind(ev []byte) (content, text, reasoning, hidden bool) {
 	var name string
 	var data []byte
