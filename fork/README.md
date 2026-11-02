@@ -3,7 +3,7 @@
 This directory keeps the answer-timeout patch on current upstream Magpie
 without letting Magpie's official updater replace it. The scheduled workflow
 rebases the patch branch in a disposable runner, tests that tree, and publishes
-an immutable Linux ARM64 release. It also publishes the tested binary as a
+an immutable Linux AMD64 release. It also publishes the tested binary as a
 public OCI artifact at `ghcr.io/ryan-zhao-go/magpie-fork:latest` for hosts that
 cannot reach GitHub's Release web endpoint. It never force-pushes the patch
 branch.
