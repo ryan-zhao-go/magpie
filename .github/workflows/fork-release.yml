@@ -143,3 +143,28 @@ jobs:
             --latest \
             --title "$RELEASE_NAME" \
             --notes-file release-notes.md
+
+      - name: Publish latest verified dev snapshot
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
+          PATCH_SHA: ${{ steps.meta.outputs.patch_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish_dir=$(mktemp -d)
+          cp dist/magpie-cli-linux-arm64 dist/magpie-cli-linux-arm64.sha256 "$publish_dir/"
+          cp dist/magpie-fork-update dist/magpie-fork-update.service dist/magpie-fork-update.timer "$publish_dir/"
+          printf 'VERSION=%s\nUPSTREAM_SHA=%s\nPATCH_SHA=%s\n' \
+            "$VERSION" "$UPSTREAM_SHA" "$PATCH_SHA" >"$publish_dir/SOURCE"
+          git -C "$publish_dir" init
+          git -C "$publish_dir" config user.name magpie-fork-release
+          git -C "$publish_dir" config user.email magpie-fork-release@users.noreply.github.com
+          git -C "$publish_dir" switch --orphan fork-dist
+          git -C "$publish_dir" add .
+          git -C "$publish_dir" commit -m "Publish $VERSION"
+          git -C "$publish_dir" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          auth_header=$(git config --local --get-all http.https://github.com/.extraheader)
+          git -C "$publish_dir" config http.https://github.com/.extraheader "$auth_header"
+          git -C "$publish_dir" push --force origin HEAD:refs/heads/fork-dist
