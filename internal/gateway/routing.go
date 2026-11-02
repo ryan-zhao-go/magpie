@@ -430,6 +430,10 @@ const (
 	// nobody rests, as a long prompt is slow anywhere; again and again on
 	// one account's model, that model rests there (restSlow)
 	failSlow = "slow"
+	// failAnswerTimeout: the member produced no answer text or tool call
+	// before its group's answer deadline. The next member is asked and
+	// nobody rests.
+	failAnswerTimeout = "answer_timeout"
 	// failLoop: the reply was ended stuck in a loop (#1359) — the agent
 	// is told, and nobody rests, as the model, not the account, looped
 	failLoop = "loop"
@@ -448,6 +452,8 @@ const (
 // loopErrType is the usage log's ErrType for a reply ended for looping
 // (#1359), told apart from what vendors call their errors.
 const loopErrType = usage.LoopErrType
+
+const answerTimeoutErrType = "answer_timeout"
 
 // reloopedError is a try's error once its reasoning was found stuck in a
 // loop before it said anything, and it was let go for the request to ask
