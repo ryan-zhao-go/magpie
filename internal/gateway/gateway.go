@@ -3083,6 +3083,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// slow to start, the next member is asked (Group.FirstToken)
 			hw.firstWait = time.Duration(firstToken) * time.Second
 		}
+		answerTimeout := cmp.Or(c.answerTimeout, g.AnswerTimeout)
+		if isGroup && answerTimeout > 0 && !last {
+			hw.answerWait = time.Duration(answerTimeout) * time.Second
+		}
 		call.Provider, call.To, call.Usage = c.p.ID, "", Usage{}
 		model = c.model
 		lastTried = c.p
@@ -3632,6 +3636,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			watched.attempt(call, try, c.p.ID, sent, hw, capture)
 			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			break
+		}
+		if hw.answerTimedOut {
+			call.Status = http.StatusGatewayTimeout
+			call.Error = fmt.Sprintf("%s: no answer text or tool call in %ds", c.p.Name, answerTimeout)
+			call.Usage.ErrType = answerTimeoutErrType
+			try.Status, try.Error, try.Fail, try.Rest = call.Status, call.Error, failAnswerTimeout, nil
+			call.TTFT, call.FirstText, call.Flow, call.FirstReasoning = 0, 0, 0, 0
+			watched.attempt(call, try, c.p.ID, sent, hw, capture)
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+			skipped = append(skipped, c.label()+": "+call.Error)
+			continue
 		}
 		if hw.slow {
 			// no first content in the group's FirstToken, and nothing of
