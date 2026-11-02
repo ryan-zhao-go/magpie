@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=ryan-zhao-go/magpie
+asset_name=magpie-cli-linux-arm64
+checksum_name=$asset_name.sha256
+latest=https://raw.githubusercontent.com/$repo/fork-dist
+bin=${MAGPIE_BIN:-$HOME/.local/bin/magpie}
+service=${MAGPIE_SERVICE:-magpie.service}
+health_tries=${MAGPIE_HEALTH_TRIES:-20}
+health_delay=${MAGPIE_HEALTH_DELAY:-1}
+bin_dir=$(dirname "$bin")
+backup=$bin.previous
+lock=$bin.fork-update.lock
+tmp=
+rollback_needed=0
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    printf 'no SHA-256 tool found (sha256sum or shasum)\n' >&2
+    return 1
+  fi
+}
+
+download_release_asset() {
+  local output=$1 max_time=$2 url=$3
+  curl \
+    -fsSL --proto '=https' --tlsv1.2 \
+    --http1.1 --retry 3 --retry-delay 2 --retry-all-errors --remove-on-error \
+    --connect-timeout 15 --max-time "$max_time" \
+    --output "$output" \
+    "$url"
+}
+
+case "$health_tries:$health_delay" in
+  *[!0-9:]*|:*|*:)
+    printf 'invalid health retry settings\n' >&2
+    exit 2 ;;
+esac
+if [[ $health_tries -lt 1 ]]; then
+  printf 'MAGPIE_HEALTH_TRIES must be at least 1\n' >&2
+  exit 2
+fi
+if [[ ! -x $bin ]]; then
+  printf 'magpie executable not found at %s\n' "$bin" >&2
+  exit 1
+fi
+
+cleanup() {
+  local status=$?
+  if [[ $rollback_needed -eq 1 ]]; then
+    rollback_needed=0
+    systemctl --user stop "$service" >/dev/null 2>&1 || true
+    if [[ -f $backup ]]; then
+      mv -f "$backup" "$bin"
+      chmod 0755 "$bin"
+    fi
+    systemctl --user start "$service" >/dev/null 2>&1 || true
+  fi
+  if [[ -n $tmp ]]; then
+    rm -f "$tmp/$asset_name" "$tmp/$checksum_name" "$tmp/release.json" "$tmp/meta" "$tmp/previous"
+    rmdir "$tmp" 2>/dev/null || true
+  fi
+  rmdir "$lock" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+if ! mkdir "$lock" 2>/dev/null; then
+  printf 'another fork update is already running (%s)\n' "$lock" >&2
+  exit 1
+fi
+
+# Stop the official updater before any restart. This is deliberately done
+# even when the fork release is unchanged, so the timer repairs the setting.
+"$bin" update auto off >/dev/null
+
+tmp=$(mktemp -d "$bin_dir/.magpie-fork-update.XXXXXX")
+case "$tmp" in
+  "$bin_dir"/.magpie-fork-update.*) ;;
+  *) printf 'unexpected temporary directory: %s\n' "$tmp" >&2; exit 1 ;;
+esac
+
+download_release_asset "$tmp/$asset_name" 300 "$latest/$asset_name"
+download_release_asset "$tmp/$checksum_name" 120 "$latest/$checksum_name"
+
+read -r expected_digest expected_name extra <"$tmp/$checksum_name" || true
+expected_name=${expected_name#\*}
+if [[ ! $expected_digest =~ ^[0-9a-f]{64}$ || $expected_name != "$asset_name" || -n ${extra:-} ]]; then
+  printf 'invalid checksum file in the latest fork release\n' >&2
+  exit 1
+fi
+actual_digest=$(hash_file "$tmp/$asset_name")
+if [[ $actual_digest != "$expected_digest" ]]; then
+  printf 'checksum mismatch for the latest fork release\n' >&2
+  exit 1
+fi
+if [[ ! -s $tmp/$asset_name ]]; then
+  printf 'empty binary in the latest fork release\n' >&2
+  exit 1
+fi
+chmod 0755 "$tmp/$asset_name"
+
+current_digest=$(hash_file "$bin")
+if [[ $current_digest == "$expected_digest" ]]; then
+  printf 'magpie fork already matches the latest release\n'
+  exit 0
+fi
+
+# Stopping first lets any already-staged official update finish before the
+# fork binary is placed, so an on-exit official install cannot win the race.
+# Preserve the known-running fork before that stop: the file at the binary
+# path after stop may already be the staged official build.
+cp -p "$bin" "$tmp/previous"
+if [[ $(hash_file "$tmp/previous") != "$current_digest" ]]; then
+  printf 'the installed binary changed while it was being preserved\n' >&2
+  exit 1
+fi
+systemctl --user stop "$service"
+rollback_needed=1
+mv -f "$tmp/previous" "$backup.next"
+mv -f "$backup.next" "$backup"
+mv "$tmp/$asset_name" "$bin"
+systemctl --user start "$service"
+
+healthy=0
+for ((i = 0; i < health_tries; i++)); do
+  if "$bin" healthcheck >/dev/null 2>&1; then
+    healthy=1
+    break
+  fi
+  sleep "$health_delay"
+done
+installed_digest=$(hash_file "$bin")
+if [[ $healthy -ne 1 || $installed_digest != "$expected_digest" ]]; then
+  printf 'the latest fork release failed health or changed during restart; restoring the previous binary\n' >&2
+  exit 1
+fi
+
+rollback_needed=0
+printf 'installed the latest magpie fork release\n'
