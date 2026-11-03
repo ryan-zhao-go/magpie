@@ -501,6 +501,17 @@ used only on the accounts it names, one it doesn't name on every account.
 
 ## Remote magpie APIs
 
+A Responses history item that the upstream names as missing is recovered
+before output starts when that id belongs to a reasoning item in the request.
+This covers a 400 and a relay's 502, including `response.failed` in a 200
+stream. The existing reasoning recovery removes the refused private notes
+and retries once; messages and tool calls/results stay, and the refused seals
+are omitted on later turns in that conversation. A missing message, call,
+unknown id or compaction does not permit this recovery, and a missing
+reasoning error does not permit dropping compaction after the cleaned retry
+fails. `TestResponsesMissingReasoningRecovery` and
+`TestResponsesMissingReasoningRecoveryBounded` exercise these paths.
+
 `GET /v1/magpie/trace` answers the routing this gateway has decided, for a
 magpie on the same computer that does not serve it, whose console plays it as
 its own Routing page (#2606). A trace names accounts and their emails, what

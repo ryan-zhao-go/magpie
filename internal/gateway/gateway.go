@@ -3801,12 +3801,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 		}
-		if resealed < 2 && from == provider.Responses && !hw.passing && hw.code() >= 400 && foreignReasoning.Match(hw.errBody()) {
+		missingReasoning := missingReasoningItem(hw.code(), errBody, attemptBody)
+		if resealed < 2 && from == provider.Responses && !hw.passing && hw.code() >= 400 &&
+			(foreignReasoning.Match(errBody) || missingReasoning) {
 			// the conversation moved here from another account or vendor,
 			// whose sealed reasoning this one can't read: asked again
 			// without it, and what it refused isn't sent here again. xAI
 			// says so as a 400, or as the stream's error, which may be
-			// read as another status. Refused again, or with no reasoning
+			// read as another status. A missing reasoning item is recovered
+			// here too, including a remote relay's 502; it never permits
+			// dropping compaction. Refused again, or with no reasoning
 			// to leave out, it's the compaction OpenAI sealed that goes
 			// (waroy: Codex compacted on GPT, then switched to Grok)
 			b, ok := []byte(nil), false
@@ -3818,7 +3822,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			// a compaction sealed where native compaction is on is never
 			// left out: its writer's refusal goes back as it came (#1099)
-			if !ok && checkpoint == nil && !s.compactsNatively(c.p, c.model) {
+			if !ok && !missingReasoning && checkpoint == nil && !s.compactsNatively(c.p, c.model) {
 				resealed = 2
 				if b, ok = withoutCompaction(body); ok {
 					refused(stuck, c.vendor(), attemptBody, compactionKinds...)
