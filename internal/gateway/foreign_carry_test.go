@@ -18,17 +18,21 @@ import (
 // account sealed, as #4798's reporters quote it (zane668, ZanderH-code).
 const codexUnverifiable = "The encrypted content KqMXgAAAAABpGZWl could not be verified. Reason: Encrypted content could not be decrypted or parsed."
 
+const itemNotFoundStream = `event: error` + "\n" + `data: {"type":"error","error":{"type":"invalid_request_error","message":"Item with id 'rs_missing' not found."}}`
+
 // carrySealer is a Responses upstream that seals its reasoning as
 // "sealed-by-<name>#<its call>", each item its own, reads only its own, and answers each request it
 // takes with that reasoning and a call, as Grok and Codex answer a tool
 // loop. It keeps every request's input.
 type carrySealer struct {
-	name    string
-	refusal string // its words for reasoning it can't read, as a 400
-	mu      sync.Mutex
-	down    int // answering this status, for the conversation to move on
-	n       int
-	inputs  [][]map[string]any
+	name          string
+	refusal       string // its words for reasoning it can't read, as a 400
+	itemNotFound  bool   // refuses foreign reasoning in an HTTP 200 SSE error
+	refuseCleaned bool   // refuses the cleaned retry too
+	mu            sync.Mutex
+	down          int // answering this status, for the conversation to move on
+	n             int
+	inputs        [][]map[string]any
 }
 
 func (s *carrySealer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +58,10 @@ func (s *carrySealer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case down != 0:
 		w.WriteHeader(down)
 		io.WriteString(w, `{"error":{"message":"Grok Build usage balance exhausted","type":"insufficient_quota"}}`)
+		return
+	case s.itemNotFound && (foreign || s.refuseCleaned):
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(itemNotFoundStream))
 		return
 	case foreign:
 		w.WriteHeader(400)
@@ -267,4 +275,92 @@ func TestForeignCarriedReasoningAskedAgainWithout(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A Responses provider can report a carried reasoning item it cannot find as
+// an error event under HTTP 200. An Anthropic request translated to Responses
+// gets the same bounded recovery as another provider's encrypted-content
+// refusal: the same candidate is asked once more without the carried item.
+func TestUnreadableCarriedReasoningAskedAgainWithout(t *testing.T) {
+	fresh(t)
+	grok := &carrySealer{name: "grok", refusal: xaiUndecryptable}
+	codex := &carrySealer{name: "codex", itemNotFound: true}
+	for _, u := range []struct {
+		id   string
+		name string
+		h    http.Handler
+	}{{"grok1", "Grok (SuperGrok)", grok}, {"codex1", "Codex", codex}} {
+		up := httptest.NewServer(u.h)
+		t.Cleanup(up.Close)
+		if err := provider.Save(provider.Provider{ID: u.id, Name: u.name, Key: "k-" + u.id, Models: []string{"m"}, Responses: up.URL + "/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "grok-codex", Members: []string{"grok1/m", "codex1/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	c := &carryClient{from: provider.Anthropic, stream: true}
+	if code, body := c.ask(t, s); code != http.StatusOK {
+		t.Fatalf("first turn: %d %s", code, body)
+	}
+	grok.taken()
+	grok.mu.Lock()
+	grok.down = http.StatusPaymentRequired
+	grok.mu.Unlock()
+
+	if code, body := c.ask(t, s); code != http.StatusOK {
+		t.Fatalf("after the switch: %d %s", code, body)
+	}
+	seals, _ := codex.taken()
+	if fmt.Sprint(seals) != "[[grok] []]" {
+		t.Fatalf("Codex was sent reasoning %v, want Grok's, then none", seals)
+	}
+}
+
+func TestUnreadableCarriedReasoningRecoveryIsBounded(t *testing.T) {
+	t.Run("no carried reasoning is not retried", func(t *testing.T) {
+		fresh(t)
+		u := &scripted{replies: []reply{{http.StatusOK, "text/event-stream", sse(itemNotFoundStream)}}}
+		scriptedOn(t, "a", provider.Responses, u)
+		rec := askOn(New(), provider.Anthropic, "a/m", true)
+		if u.n != 1 {
+			t.Fatalf("provider asked %d times without carried reasoning, want 1: %d %s", u.n, rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("cleaned retry fails once", func(t *testing.T) {
+		fresh(t)
+		grok := &carrySealer{name: "grok", refusal: xaiUndecryptable}
+		codex := &carrySealer{name: "codex", itemNotFound: true, refuseCleaned: true}
+		for _, u := range []struct {
+			id string
+			h  http.Handler
+		}{{"grok1", grok}, {"codex1", codex}} {
+			up := httptest.NewServer(u.h)
+			t.Cleanup(up.Close)
+			if err := provider.Save(provider.Provider{ID: u.id, Name: u.id, Key: "k-" + u.id, Models: []string{"m"}, Responses: up.URL + "/v1"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := provider.SaveGroup(provider.Group{Name: "grok-codex", Members: []string{"grok1/m", "codex1/m"}, Routing: provider.Ordered}); err != nil {
+			t.Fatal(err)
+		}
+		s := New()
+		c := &carryClient{from: provider.Anthropic}
+		if code, body := c.ask(t, s); code != http.StatusOK {
+			t.Fatalf("first turn: %d %s", code, body)
+		}
+		grok.taken()
+		grok.mu.Lock()
+		grok.down = http.StatusPaymentRequired
+		grok.mu.Unlock()
+		if code, _ := c.ask(t, s); code == http.StatusOK {
+			t.Fatal("cleaned retry unexpectedly succeeded")
+		}
+		seals, _ := codex.taken()
+		if fmt.Sprint(seals) != "[[grok] []]" {
+			t.Fatalf("Codex was sent reasoning %v, want exactly one original and one cleaned try", seals)
+		}
+	})
 }

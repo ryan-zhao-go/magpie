@@ -1753,6 +1753,11 @@ func codexRelayedAccount(base string, h http.Header, on *provider.Provider) (pro
 // #3062).
 var unreadableItem = regexp.MustCompile(`(?i)(?:encrypted content for item|item with id|referenced reasoning item) '?([A-Za-z]+_[A-Za-z0-9_-]+)'?`)
 
+func itemNotFoundError(status int, body []byte) bool {
+	return status == http.StatusBadRequest && unreadableItem.Match(body) &&
+		bytes.Contains(bytes.ToLower(body), []byte("not found"))
+}
+
 // withoutUnreadable is body without what OpenAI's refusal msg says it
 // can't read: the item it names, what another account sealed
 // (withoutSeals: a web search's too, #3887), or a member of Codex's
@@ -3732,8 +3737,7 @@ func summaryTooLarge(rec *recorder) bool {
 // OpenAI's and OpenAI's API answer one they never stored ("Item with id
 // 'rs_…' not found", #1008), which a relay in front of them passes on.
 func itemNotFound(rec *recorder) bool {
-	b := rec.body.Bytes()
-	return rec.status == http.StatusBadRequest && unreadableItem.Match(b) && bytes.Contains(bytes.ToLower(b), []byte("not found"))
+	return itemNotFoundError(rec.status, rec.body.Bytes())
 }
 
 // compactFailure names who answered a summary request with a failure — the
