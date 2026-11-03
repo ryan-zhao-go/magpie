@@ -1684,8 +1684,25 @@ func codexRelayedAccount(base string, h http.Header, on *provider.Provider) (pro
 var unreadableItem = regexp.MustCompile(`(?i)(?:encrypted content for item|item with id) '?([A-Za-z]+_[A-Za-z0-9_-]+)'?`)
 
 func itemNotFoundError(status int, body []byte) bool {
-	return status == http.StatusBadRequest && unreadableItem.Match(body) &&
+	return (status == http.StatusBadRequest || status == http.StatusBadGateway) && unreadableItem.Match(body) &&
 		bytes.Contains(bytes.ToLower(body), []byte("not found"))
+}
+
+// A relay can wrap an input refusal in a 502, including response.failed.
+// Only a reasoning item present in this request permits reasoning recovery;
+// a missing message, call or compaction must keep its own failure.
+func missingReasoningItem(status int, msg, body []byte) bool {
+	if !itemNotFoundError(status, msg) {
+		return false
+	}
+	m := unreadableItem.FindSubmatch(msg)
+	return anyInputItem(body, func(raw []byte) bool {
+		var it struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		return json.Unmarshal(raw, &it) == nil && it.Type == "reasoning" && it.ID == string(m[1])
+	})
 }
 
 // withoutUnreadable is body without what OpenAI's refusal msg says it
