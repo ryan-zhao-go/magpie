@@ -110,6 +110,22 @@ type delayedAnswer struct {
 	n           int
 }
 
+type delayedJSONError struct {
+	wait time.Duration
+}
+
+func (d delayedJSONError) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	io.ReadAll(r.Body)
+	select {
+	case <-r.Context().Done():
+		return
+	case <-time.After(d.wait):
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	io.WriteString(w, `{"error":{"message":"bad input","type":"invalid_request_error"}}`)
+}
+
 func (s *delayedAnswer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.ReadAll(r.Body)
 	s.n++
@@ -205,6 +221,51 @@ func TestGroupAnswerTimeoutWholeJSON(t *testing.T) {
 				t.Fatalf("%d %s (a %d b %d) tries=%+v", code, body, a.n, b.n, lastRoute(s).Tries)
 			}
 		})
+	}
+}
+
+func TestGroupAnswerTimeoutNonStreamDoesNotKeepAlive(t *testing.T) {
+	fresh(t)
+	heldAfter, watchedEvery := keepHeldAfter, watchEvery
+	keepHeldAfter, watchEvery = 20*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { keepHeldAfter, watchEvery = heldAfter, watchedEvery })
+
+	slowOn(t, "a", delayedJSONError{wait: 80 * time.Millisecond})
+	b := &scripted{replies: []reply{{200, "application/json", chatOK}}}
+	scriptedOn(t, "b", provider.Chat, b)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered, AnswerTimeout: 1}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"group/g","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("content type %q, want JSON", got)
+	}
+	if strings.Contains(rec.Body.String(), ": keepalive") {
+		t.Fatalf("non-stream response contains SSE keepalive: %q", rec.Body.String())
+	}
+	if b.n != 0 {
+		t.Fatalf("request error unexpectedly fell back to b %d times", b.n)
+	}
+}
+
+func TestAnswerTimeoutStreamingKeepalive(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := newHoldWriter(rec, true)
+	h.streams = true
+	h.answerWait = time.Second
+	h.alive = &keptAlive{
+		proto:   provider.Chat,
+		streams: true,
+		at:      time.Now().Add(-10 * time.Second),
+	}
+	h.keepAlive()
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") || !strings.Contains(rec.Body.String(), ": keepalive") {
+		t.Fatalf("streaming keepalive: %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
 }
 
