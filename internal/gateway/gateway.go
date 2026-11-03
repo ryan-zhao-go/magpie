@@ -3893,7 +3893,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 		}
-		if resealed < 2 && from == provider.Responses && !hw.passing && hw.code() >= 400 && foreignReasoning.Match(hw.errBody()) {
+		missingReasoning := missingReasoningItem(hw.code(), errBody, attemptBody)
+		if resealed < 2 && from == provider.Responses && !hw.passing && hw.code() >= 400 &&
+			(foreignReasoning.Match(errBody) || missingReasoning) {
 			// the conversation moved here from another account or vendor,
 			// whose seals this one can't read: asked again without them
 			// (its reasoning, and each message's, call's and web search's
@@ -3912,7 +3914,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			// a compaction sealed where native compaction is on is never
 			// left out: its writer's refusal goes back as it came (#1099)
-			if !ok && checkpoint == nil && !s.compactsNatively(c.p, c.model) {
+			if !ok && !missingReasoning && checkpoint == nil && !s.compactsNatively(c.p, c.model) {
 				resealed = 2
 				if b, ok = withoutCompaction(body); ok {
 					refused(stuck, c.vendor(), attemptBody, b)
