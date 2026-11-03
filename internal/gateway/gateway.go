@@ -3710,7 +3710,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			i--
 			continue
 		}
-		if resealed == 0 && from != provider.Responses && !hw.passing && hw.code() >= 400 && foreignReasoning.Match(hw.errBody()) {
+		errBody := hw.errBody()
+		if resealed == 0 && from != provider.Responses && !hw.passing && hw.code() >= 400 &&
+			(foreignReasoning.Match(errBody) || itemNotFoundError(hw.code(), errBody)) {
 			// the same refusal of a client of another API: the sealed
 			// reasoning its calls' ids carry (reasoning_carry.go), which
 			// a Responses upstream other than the one that sealed it
