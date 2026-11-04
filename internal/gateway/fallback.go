@@ -1710,8 +1710,10 @@ func shapeRefused(status int, body []byte) bool {
 // supported for the API use." (Gemini, Antigravity, Code Assist; #1621),
 // and OpenAI's "unsupported_country_region_territory", which a relay may
 // pass on as a 400. It is about the address the request leaves from, not
-// the request or the model: another member, going another way, may
-// answer, and this one rests only as briefly as any other failure does.
+// the request, the model or the account: another member, going another
+// way, may answer, and none rests for it (restAfterMarked, #5182). Google
+// decides it per connection, so the connection it came on is not used
+// again (regionFresh).
 // A request's own field named location ("location field is not
 // supported") isn't one.
 var regionWords = regexp.MustCompile(`(?i)\buser location is not supported for the api use\b|unsupported_country_region_territory|country, region,? or territory not supported`)
@@ -1720,6 +1722,38 @@ var regionWords = regexp.MustCompile(`(?i)\buser location is not supported for t
 // from, with regionWords.
 func regionRefused(status int, body []byte) bool {
 	return status >= 400 && regionWords.Match(body)
+}
+
+// googleRegionWords is Google's wording of the refusal (Gemini, Code
+// Assist, Antigravity), which names the vendor in regionNote.
+var googleRegionWords = regexp.MustCompile(`(?i)\buser location is not supported for the api use\b`)
+
+// regionNote is what the agent is told beside a refusal of where the
+// request came from (regionRefused), or "" for any other reply: the
+// vendor's restriction is on the model asked, from where the request
+// leaves, so its other models may answer on the same account
+// (taoxiaoxin, #5182: Antigravity's gemini-3.8-flash refused, its Claude
+// models answered), and no account rests for it.
+func regionNote(model string, status int, body []byte) string {
+	words := wordsOf(body)
+	if !regionRefused(status, words) {
+		return ""
+	}
+	who := "the vendor"
+	if googleRegionWords.Match(words) {
+		who = "Google"
+	}
+	return fmt.Sprintf("%s doesn't serve %s to requests from the region this one left from: a regional restriction on the model, not on the account, so no account rests for it and the provider's other models may still answer. Use another provider for %s, or give the provider a proxy in a region %s serves (its Proxy setting)", who, model, model, who)
+}
+
+// explained is p's words for a failed reply b, as the agent is told them
+// (Provider.Explain), with regionNote for a refusal of where it came from.
+func explained(p provider.Provider, model string, res *http.Response, b []byte) string {
+	msg := p.Explain(p.Name+": "+provider.APIError(b, res.Status), res.StatusCode, b)
+	if note := regionNote(model, res.StatusCode, b); note != "" {
+		msg += " — " + note
+	}
+	return msg
 }
 
 // protectionWords are how the ChatGPT backend answers a long Codex
@@ -2027,6 +2061,11 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 		// 后再试"); a plan used up or no money left won't clear in seconds,
 		// nor an account's token wall (walled)
 		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
+	case regionRefused(status, wordsOf(body)):
+		// refused at the edge the connection reached, which a new
+		// connection a moment later may not be (#5182: answered 12s on);
+		// the try goes out on a new one (regionFresh)
+		return wait, again < lastRetries
 	}
 	return 0, false
 }
@@ -2953,6 +2992,14 @@ type keptAlive struct {
 	streams bool
 	// codex, whether Codex sent the request (fromCodex)
 	codex bool
+	// whole, a reply wanted only whole (wantsWhole): a compaction's summary
+	// ask, written into codexCompact's recorder, which Codex never reads.
+	// It is never sent a 200 or a comment: once one went, a refusal after
+	// it came as the stream's error, not its status, and a summary over
+	// the vendor's byte cap whose fitting tries took past keepHeldAfter (a
+	// 40 MB upload asked four times) failed 502 instead of being made
+	// without a model (#4862)
+	whole bool
 	// Only opted-in Claude cache reporting can defer initial keepalives.
 	// Selection releases it before process startup; expiry keeps the stream alive.
 	cacheReportUntil time.Time
@@ -2976,9 +3023,11 @@ var agentQuietMost = 4 * time.Minute
 // a 413 for an unexpected status and a 400 context_length_exceeded for an
 // invalid request, and either ends the turn with nothing compacted, a
 // compaction refused the same way failing outright (codex-rs codex-api
-// api_bridge.rs). Another client keeps the status.
+// api_bridge.rs). Another client keeps the status, and so does magpie's
+// own summary ask (whole), whose 413 codexCompact reads as its cue to ask
+// the conversation as text and then compact without a model.
 func (a *keptAlive) compactsInStream(status int, msg string) bool {
-	return a.codex && a.streams && a.proto == provider.Responses && (status == http.StatusRequestEntityTooLarge || tooLong(status, msg))
+	return a.codex && !a.whole && a.streams && a.proto == provider.Responses && (status == http.StatusRequestEntityTooLarge || tooLong(status, msg))
 }
 
 // tooQuiet says whether a Responses agent that has had no event of its
@@ -2997,7 +3046,7 @@ func (h *holdWriter) keepAlive() {
 	a := h.alive
 	// a Gemini stream has none, as geminiEncoder.keepalive: agy fails on
 	// the comment ("invalid stream chunk: : keepalive", #934)
-	if !h.streams || a == nil || a.proto == provider.Gemini || time.Since(a.at) < min(keepaliveEvery, keepHeldEvery) {
+	if !h.streams || a == nil || a.whole || a.proto == provider.Gemini || time.Since(a.at) < min(keepaliveEvery, keepHeldEvery) {
 		return
 	}
 	if !a.sent {

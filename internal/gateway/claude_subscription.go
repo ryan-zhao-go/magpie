@@ -519,8 +519,8 @@ func claudeWorkDir() (string, error) {
 	return dir, nil
 }
 
-// clientWorkDir is the working directory the caller names, the last one
-// it names, as Claude Code ("Primary working directory:", or just "CWD:"
+// clientWorkDir is the working directory the caller names, the first one
+// it names (clientNamedWorkPlace), as Claude Code ("Primary working directory:", or just "CWD:"
 // on a --bare run), Codex (<cwd>), OpenCode ("Working directory:") and pi
 // ("Current working directory:") write it; "" when they name none, or one
 // that isn't an absolute path to a folder on this computer (a caller
@@ -564,8 +564,26 @@ func clientNamedWorkDir(req *Request) string {
 // (Codex's <environment_context> is one of the user's, OpenCode's <env> a
 // later message), and a line quoted from Claude Code's own words — its
 // instructions or a --bare run's "CWD:" — is never one of them.
+//
+// Of the texts that name a folder, the first goes: the one the
+// conversation started in (in that text, its last line). A caller that
+// moves says so in a message after (Claude
+// Code's "# Environment update", "Primary working directory: /y (was
+// /x)"), and taking that one gave a run started again for the
+// conversation (its saved session resumed, a branch, a replay) another
+// system prompt than the conversation's first run: envTurnsNote names the
+// folder, and a run in the caller's own folder has it in Claude Code's own
+// environment and saves its session in that folder's project, so the
+// session wasn't found. The prompt differed right after Claude Code's own
+// part, and the whole conversation was written to the cache again
+// (EricWvi on X: …/frontend, then …/frontend/src). The run has no tools
+// of its own; the move reaches the model in the conversation as the
+// caller said it.
 func clientNamedWorkPlace(req *Request) (dir string, inTurns bool) {
 	look := func(t string, turn bool, re *regexp.Regexp) {
+		if dir != "" {
+			return
+		}
 		for _, m := range re.FindAllStringSubmatch(t, -1) {
 			for _, g := range m[1:] {
 				g = strings.Trim(strings.TrimSpace(g), "`'\"")
@@ -2414,7 +2432,7 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		// where that turn put it, not where the conversation's own next
 		// turn comes by (#4914)
 		for _, e := range b.shelf {
-			if e.behind == key && (e.behindTurn != "" || e.behindLine != "") && (s == nil || e.at.After(s.at)) {
+			if e.behind == key && (e.behindTurn != "" || e.behindLine != "" || e.behindMsg != "") && (s == nil || e.at.After(s.at)) {
 				s = e
 			}
 		}
@@ -2449,7 +2467,7 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 func (s *savedSession) cutBehind() bool {
 	var cut string
 	var err error
-	if s.behindLine != "" {
+	if s.behindLine != "" || s.behindMsg != "" {
 		cut, err = cutReply(s.sessions, s.session, s.behindLine, s.behindMsg)
 	} else {
 		cut, err = cutSessionBefore(s.sessions, s.session, s.behindTurn)
@@ -2594,13 +2612,15 @@ func (r *subscriptionRun) replyBegun(msg string) {
 // branchAt is a branch of the run's session cut after its line at, as far
 // as the last line of its reply msg (cutReply), for a turn of its
 // conversation told since: the copy is made now, before the run is let go
-// with its file, and is the branch's own. nil when there is no line or
-// session, or the copy can't be made.
+// with its file, and is the branch's own. A run whose reply was its first
+// may have heard no line of its own as the side question began, only the
+// reply's id, and is cut by that alone (sleepy_shibe). nil when there is
+// neither a line nor a reply, no session, or the copy can't be made.
 func (r *subscriptionRun) branchAt(at, msg, owner string, since []Message) *savedSession {
 	r.mu.Lock()
 	sid, sessions, marks := r.sessionID, slices.Clone(r.sessions), r.clientMarks
 	r.mu.Unlock()
-	if at == "" || sid == "" || len(sessions) == 0 || marks {
+	if at == "" && msg == "" || sid == "" || len(sessions) == 0 || marks {
 		return nil
 	}
 	cut, err := cutReply(sessions, sid, at, msg)
@@ -2628,6 +2648,16 @@ func cutSession(dirs []string, sid, uuid string) (string, error) {
 	return cutSessionAt(dirs, sid, uuid, cutAfter)
 }
 
+// cutSessionAt is cutSession as far as where at says in the session's
+// lines, uuid's line found by mark.
+func cutSessionAt(dirs []string, sid, uuid string, at func(b, mark []byte, uuid string) int) (string, error) {
+	if uuid == "" {
+		return "", errors.New("no session to cut")
+	}
+	mark := []byte(`"uuid":"` + uuid + `"`)
+	return cutSessionWhere(dirs, sid, "line "+uuid, func(b []byte, _ bool) int { return at(b, mark, uuid) })
+}
+
 // cutReply is cutSession as far as the last line of the reply msg, the
 // message whose line uuid is or one after it: the conversation as it
 // stood before the side question asked after that reply. The interactive
@@ -2635,16 +2665,23 @@ func cutSession(dirs []string, sid, uuid string) (string, error) {
 // run had heard last as the side question began may be one before the
 // reply (its tool call, before the result and the reply's words): cut
 // there, the conversation went on with a call Claude Code took as
-// interrupted (sleepy_shibe). Lines of msg come before the side
-// question's, which the run was told after the reply; with no msg, or
-// none of its lines in the session, the cut is after uuid's line.
+// interrupted (sleepy_shibe). A run's first reply may have no line heard
+// at all, uuid empty, and is cut by msg alone. Lines of msg come before
+// the side question's, which the run was told after the reply; they are
+// waited for as long as a line is (cutWait), as an earlier line found
+// first would cut the reply off. With no msg, or none of its lines in the
+// session by then, the cut is after uuid's line.
 func cutReply(dirs []string, sid, uuid, msg string) (string, error) {
 	if msg == "" {
 		return cutSession(dirs, sid, uuid)
 	}
-	return cutSessionAt(dirs, sid, uuid, func(b, mark []byte, uuid string) int {
+	mark := []byte(`"uuid":"` + uuid + `"`)
+	return cutSessionWhere(dirs, sid, "reply "+msg, func(b []byte, last bool) int {
 		if end := cutAfterReply(b, msg); end > 0 {
 			return end
+		}
+		if !last || uuid == "" {
+			return -1
 		}
 		return cutAfter(b, mark, uuid)
 	})
@@ -2685,18 +2722,21 @@ func cutSessionBefore(dirs []string, sid, uuid string) (string, error) {
 	return cutSessionAt(dirs, sid, uuid, cutBefore)
 }
 
-func cutSessionAt(dirs []string, sid, uuid string, at func(b, mark []byte, uuid string) int) (string, error) {
-	if sid == "" || uuid == "" || strings.ContainsAny(sid, `/\`) || strings.Contains(sid, "..") {
+// cutSessionWhere copies session sid as far as the place at finds in its
+// lines (> 0), asked again until cutWait is over; last is the final ask.
+// what is what it looks for, as an error says.
+func cutSessionWhere(dirs []string, sid, what string, at func(b []byte, last bool) int) (string, error) {
+	if sid == "" || strings.ContainsAny(sid, `/\`) || strings.Contains(sid, "..") {
 		return "", errors.New("no session to cut")
 	}
-	mark := []byte(`"uuid":"` + uuid + `"`)
 	for deadline := time.Now().Add(cutWait); ; time.Sleep(20 * time.Millisecond) {
+		last := time.Now().After(deadline)
 		for _, dir := range dirs {
 			b, err := os.ReadFile(filepath.Join(dir, sid+".jsonl"))
 			if err != nil {
 				continue
 			}
-			end := at(b, mark, uuid)
+			end := at(b, last)
 			if end <= 0 {
 				continue
 			}
@@ -2710,8 +2750,8 @@ func cutSessionAt(dirs []string, sid, uuid string, at func(b, mark []byte, uuid 
 			}
 			return id, nil
 		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("line %s isn't in session %s", uuid, sid)
+		if last {
+			return "", fmt.Errorf("%s isn't in session %s", what, sid)
 		}
 	}
 }

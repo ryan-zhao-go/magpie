@@ -347,6 +347,30 @@ function maskSpan(src, failed) {
   if (failed) load.then((ok) => ok || failed());
   return m;
 }
+// A picture in one near-black or near-white tone (Open Design's #26251E,
+// chen2652) can't be seen on the ground of that tone: once it is in, it is
+// drawn as a mono logo is, a mask in the text colour. Judged once a picture.
+const oneTone = new Map();
+function toneCheck(img) {
+  const swap = () => oneTone.get(img.src) && img.parentNode && img.replaceWith(maskSpan(img.src));
+  if (oneTone.has(img.src)) return swap();
+  img.addEventListener("load", () => {
+    if (!oneTone.has(img.src)) {
+      let one = false;
+      try {
+        const x = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+        x.canvas.width = x.canvas.height = 24;
+        x.drawImage(img, 0, 0, 24, 24);
+        const d = x.getImageData(0, 0, 24, 24).data, lo = [255, 255, 255], hi = [0, 0, 0];
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i + 3] >= 200 && ++n) for (let k = 0; k < 3; k++) lo[k] = Math.min(lo[k], d[i + k]), hi[k] = Math.max(hi[k], d[i + k]);
+        one = n > 0 && hi.every((v, k) => v - lo[k] <= 24) && (Math.max(...hi) <= 72 || Math.min(...lo) >= 224);
+      } catch {}
+      oneTone.set(img.src, one);
+    }
+    swap();
+  }, { once: true });
+}
 const pngIcons = new Set(["crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "mothx", "zoo-code", "kimi-code-desktop"]);
 
 // lazy: a picture in a long list (Plugins' rows) is asked for near the
@@ -370,6 +394,7 @@ function icon(name, lazy) {
     img.draggable = false;
     img.onerror = () => e.replaceWith(icon("generic"));
     e.append(img);
+    toneCheck(img);
     return e;
   }
   // a URL: the server keeps pictures (file:…), never the page
@@ -382,6 +407,7 @@ function icon(name, lazy) {
       img.alt = "";
       img.draggable = false;
       e.append(img);
+      toneCheck(img);
     } else {
       // a mask that fails to load draws nothing, and says nothing
       e.append(maskSpan(`icons/${name}.svg`, () => {
@@ -1419,6 +1445,12 @@ function connectLine(a, kind) {
     words.title = appOutSaid(a);
     return line;
   }
+  if (a.appBack) {
+    say(t("Back on ChatGPT · restart the {agent} app to see its account", { agent: a.name }), "wait");
+    words.title = appBackSaid(a);
+    line.append(appBackRestart());
+    return line;
+  }
   if (a.appRestart) {
     say(t("Connected · restart {agent} to use it", { agent: a.name }), "wait");
     line.append(appRestart(a));
@@ -2008,9 +2040,33 @@ function appOutSaid(a) {
   let s = o.user
     ? t("{user}'s ChatGPT allowance is used up, so magpie serves {agent}'s turns until it resets.", { user: o.user, agent: a.name })
     : t("{agent}'s ChatGPT allowance is used up, so magpie serves its turns until it resets.", { agent: a.name });
-  s += " " + t("Till then the {agent} app's ChatGPT side is off: its ChatGPT chats and projects, browser use (its Chrome control), cloud tasks, its usage meter and Log out. It all comes back on its own at the reset.", { agent: a.name });
+  s += " " + t("Till then the {agent} app's ChatGPT side is off: its ChatGPT chats and projects, browser use (its Chrome control), cloud tasks, its account, its usage meter and Log out. They come back after the reset, once the app's app-server restarts: this row offers the restart then.", { agent: a.name });
   if (o.stuck) s += " " + t("magpie couldn't restart the {agent} app's app-server: quit the app and open it again to send.", { agent: a.name });
   return s + " " + t("Keep on ChatGPT (its sign-in's Always ChatGPT) leaves {agent} on its ChatGPT account instead: it shows its own limit message till the reset, and magpie no longer takes it over.", { agent: a.name });
+}
+
+// appBackSaid: Codex back on its ChatGPT account after the reset, its app
+// still on the app-server it started while magpie was its provider, which
+// reads the account only as it starts (a bug report by mail, 11-04)
+function appBackSaid(a) {
+  return t("magpie gave {agent} back its ChatGPT account after the reset. The {agent} app still runs on the app-server it started while magpie served it, so it shows no account, no usage and none of its ChatGPT side until that restarts. Restart does it now; its window stays.", { agent: a.name });
+}
+
+// appBackRestart: the Codex app's app-server restarted, so it reads its
+// ChatGPT account again, as the accounts' "still signed in as" Restart
+function appBackRestart() {
+  const go = el("button", "ag-quiet accent", t("Restart"));
+  go.type = "button";
+  go.onclick = async () => {
+    if (!(await confirmRestart(t("The Codex app"), t("Only its app-server restarts, for its ChatGPT account; its window stays. A running turn stops.")))) return;
+    go.disabled = true;
+    go.classList.add("busy");
+    if (!(await accountAction("codex/daemon/restart-app", {}, t("Codex app-server restarted"), true, tNotice)) && go.isConnected) {
+      go.disabled = false;
+      go.classList.remove("busy");
+    }
+  };
+  return go;
 }
 
 // keepChatGPT: the takeover turned off where it is told (eddie.zhan on
@@ -2134,6 +2190,11 @@ function connectPanel(a, { fields, fieldBtn }) {
       // its own line: WebKit sized a wrapped flex line to the text alone,
       // and the next line lay over the button
       parts.unshift(w, line(keepChatGPT(a)));
+    }
+    if (a.appBack) {
+      const w = line(el("span", "ag-dot"), el("span", "", appBackSaid(a)));
+      w.classList.add("ag-warn", "ag-app-back");
+      parts.unshift(w, line(appBackRestart()));
     }
     kv(t("In {agent}", { agent: a.name }), ...parts);
   } else if (menuFromList(a)) {
@@ -7758,10 +7819,14 @@ function rateWindowsField() {
   return field(t("Rate windows"), box);
 }
 // pluginOptionsField: a plugin's declared switches (auth.options, #2038),
-// confirmed first where it asks, kept as draft.pluginOptions[key]
-function pluginOptionsField(sub) {
-  const opts = sub?.plugin?.options || [];
+// confirmed first where it asks, kept as draft.pluginOptions[key]. Those
+// that say placement "top" are drawn under the accounts, above Routing
+// (#5269); the rest under the models. The note goes with the first drawn.
+function pluginOptionsField(sub, top) {
+  const all = sub?.plugin?.options || [];
+  const opts = all.filter((o) => (o.placement === "top") === !!top);
   if (!opts.length) return [];
+  const first = top || !all.some((o) => o.placement === "top");
   const now = (o) => (draft.pluginOptions && o.key in draft.pluginOptions ? draft.pluginOptions[o.key] : !!o.on);
   const set = (o, on) => {
     const own = { ...draft.pluginOptions };
@@ -7789,7 +7854,8 @@ function pluginOptionsField(sub) {
     row.append(text, draw());
     box.append(row);
   }
-  return field(t("Plugin options"), box, t("{plugin} declares these and reads them as it works; nothing runs on its own when one changes.", { plugin: sub.plugin.name || sub.plugin.pid }));
+  box.classList.toggle("top", !!top);
+  return field(t("Plugin options"), box, first ? t("{plugin} declares these and reads them as it works; nothing runs on its own when one changes.", { plugin: sub.plugin.name || sub.plugin.pid }) : "");
 }
 // a plugin option's words in the window's language (plugins#590)
 function optionWords(o, which) {
@@ -9375,6 +9441,7 @@ function drawEditor(p, presetID) {
       // switched connected or not (Greatrobbort on X)
       const via = a.wsl ? t("Runs through WSL · {distro}: Claude Code there signs in and answers; Windows has none of its own.", { distro: a.wsl }) + " " : "", alone = /^c(laude|odex)$/.test(a.agent) ? " " + t("Just want accounts switched? {agent} needn't be connected to magpie.", { agent: a.agentName }) : "";
       ed.append(...field(t("Accounts"), renderAccounts(a, p), via + (p.routing ? t("Tick every account to use; Routing says how requests spread over them.") : subOf(a.agent).single ? t("{agent} keeps one account; the gateway runs it for every request. Signing in to another replaces it.", { agent: a.agentName }) : subOf(a.agent).own && (a.logins || []).some((l) => l.own) ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota. {agent} itself stays signed in as it is.", { agent: a.agentName && a.agentName !== a.agent ? a.agentName : p.name }) : subOf(a.agent).own || subOf(a.agent).plugin ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota.") : t("{agent} signs in to the first. Tick more and magpie moves on to the next when the one before it is out of quota. Sessions already running keep theirs until restarted.", { agent: a.agentName })) + alone));
+      ed.append(...pluginOptionsField(subOf(a.agent), true));
       if ((a.logins || []).filter((l) => l.active || l.on).length > 1) ed.append(...renderRouting(p));
       if (p.move) ed.append(...renderMove(p));
     } else {
@@ -16361,6 +16428,19 @@ function quotaHistOf(sub) {
   const user = (sub.user || "").toLowerCase();
   return quotaHist?.find?.((h) => h.provider === sub.provider && h.user === user);
 }
+// a history line's points as numbers, read once for each read of the
+// history (loadQuotaHist puts a new quotaHist): every card's draw asked for
+// them three times, and a busy account's 6000 readings parsed again each
+// time held the click that opens the Usage page (_hii11 on Discord)
+const quotaPointsRead = new WeakMap();
+function quotaPoints(l) {
+  let points = quotaPointsRead.get(l);
+  if (!points) quotaPointsRead.set(l, points = l.points.map((p) => ({
+    at: Date.parse(p.at), left: p.left,
+    start: p.start ? Date.parse(p.start) : null, reset: p.resetsAt ? Date.parse(p.resetsAt) : null,
+  })));
+  return points;
+}
 // the lines of sub's windows, as its card lists them, with points
 function quotaLines(sub) {
   const h = quotaHistOf(sub);
@@ -16372,10 +16452,7 @@ function quotaLines(sub) {
     const name = w.pool ? w.pool + " · " + w.name : w.name;
     const l = h.lines.find((x) => x.name === name);
     if (!l?.points?.length || out.some((x) => x.name === l.name)) continue;
-    out.push({ name, label: w.pool ? w.pool + " · " + t(w.name) : t(w.name), window: w, points: l.points.map((p) => ({
-      at: Date.parse(p.at), left: p.left,
-      start: p.start ? Date.parse(p.start) : null, reset: p.resetsAt ? Date.parse(p.resetsAt) : null,
-    })) });
+    out.push({ name, label: w.pool ? w.pool + " · " + t(w.name) : t(w.name), window: w, points: quotaPoints(l) });
   }
   return out;
 }
@@ -16392,9 +16469,13 @@ function quotaCycleBreak(a, b) {
 }
 // Recorded cycles, never weeks counted back from today's deadline. An
 // early reset ends the preceding cycle at the first observed new reading
-// unless the vendor's new start fits between those readings.
+// unless the vendor's new start fits between those readings. Found once
+// for a line's points (quotaPoints), however often its card is drawn.
+const quotaCyclesRead = new WeakMap();
 function quotaRecordedCycles(l) {
-  const cycles = [];
+  let cycles = quotaCyclesRead.get(l.points);
+  if (cycles) return cycles;
+  quotaCyclesRead.set(l.points, cycles = []);
   for (const p of l.points) {
     let c = cycles[cycles.length - 1];
     const prev = c?.points[c.points.length - 1];

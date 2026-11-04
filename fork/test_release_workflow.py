@@ -39,6 +39,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         block = source.split("- name: Test answer-timeout gateway behavior and races\n", 1)[1].split("\n      - ", 1)[0]
         for name in (
             "TestCompactionOverByteCapEveryTime",
+            "TestCompactionOverByteCapSlowFitting",
+            "TestHeldKeepaliveRespectsWholeAndClientStream",
             "TestThinkingHeldFor",
             "TestClaudeTrustedThinkingStreamsThroughGroup",
             "TestClaudeTrustedThinkingErrorFailsOver",

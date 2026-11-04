@@ -20,7 +20,9 @@ Scheduled runs continue to use `feature/answer-timeout` and current upstream
 `main`. The gateway gate covers both the upstream group budget and the fork's
 answer-timeout and reasoning-recovery regressions. It also checks upstream's
 trusted-thinking handover alongside whole-summary byte-cap recovery, so a
-conflict resolution must retain both behaviors.
+conflict resolution must retain both behaviors. Slow byte-cap fitting is checked
+with Codex's own User-Agent as well as without it. A held client stream receives
+keepalives, but a whole-summary recorder or a nonstream client never does.
 
 A release is created as a draft and published only when all five assets are
 uploaded. A retry preserves an existing release's version and binary, uploads
