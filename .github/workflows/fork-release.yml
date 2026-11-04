@@ -95,7 +95,7 @@ jobs:
 
       - name: Test answer-timeout gateway behavior and races
         if: steps.existing.outputs.skip != 'true'
-        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout|TestAnswerTimeoutStreamingKeepalive|TestGroupWalkStopsAtItsBudget|TestResponsesMissingReasoning|TestForeignCarriedReasoning|TestUnreadableCarriedReasoning)'
+        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout|TestAnswerTimeoutStreamingKeepalive|TestGroupWalkStopsAtItsBudget|TestResponsesMissingReasoning|TestForeignCarriedReasoning|TestUnreadableCarriedReasoning|TestClaudeClientCacheStreamingHeaders|TestClaudeClientCacheTryKeepalive|TestHeldUnsureKeptAlive|TestCompactionOverByteCapEveryTime)'
 
       - uses: actions/setup-node@v4
         if: steps.existing.outputs.skip != 'true'

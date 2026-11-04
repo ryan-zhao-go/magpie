@@ -340,6 +340,7 @@ func TestHeldUnsureKeptAlive(t *testing.T) {
 	quietFast(t)
 	rec := httptest.NewRecorder()
 	h := newHoldWriter(rec, true)
+	h.streams = true
 	h.alive = &keptAlive{proto: provider.Chat, sent: true}
 	h.atLine = true
 	h.Header().Set("Content-Type", "application/octet-stream")

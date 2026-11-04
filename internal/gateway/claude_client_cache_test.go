@@ -430,6 +430,7 @@ func TestClaudeClientCacheStreamingHeaders(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			hw := newHoldWriter(w, true)
+			hw.streams = true
 			hw.alive = &keptAlive{proto: provider.Anthropic, at: time.Now().Add(-time.Hour)}
 			if mode != "ordinary" {
 				hw.alive.cacheReportUntil = time.Now().Add(time.Minute)
@@ -485,6 +486,7 @@ func TestClaudeClientCacheTryKeepalive(t *testing.T) {
 			alive := &keptAlive{proto: provider.Anthropic}
 			if fallback {
 				prior := newHoldWriter(w, true)
+				prior.streams = true
 				prior.alive = alive
 				req := clientCacheRequest(t, `"tools":[{"name":"read","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}],`, `[{"role":"user","content":"hi"}]`)
 				cacheReportTry(prior, req)
@@ -497,6 +499,7 @@ func TestClaudeClientCacheTryKeepalive(t *testing.T) {
 				w.Header().Set("X-Magpie-Cache-Marks-Dropped", "tools:1")
 			}
 			hw := newHoldWriter(w, true)
+			hw.streams = true
 			hw.alive = alive
 			cacheReportTry(hw, nil)
 			hw.keepAlive()
