@@ -61,11 +61,7 @@ jobs:
           VERIFY_ONLY: ${{ inputs.verify_only }}
         shell: bash
         run: |
-          if [ "$VERIFY_ONLY" != true ] && gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo 'skip=true' >>"$GITHUB_OUTPUT"
-          else
-            echo 'skip=false' >>"$GITHUB_OUTPUT"
-          fi
+          python3 fork/release_publish.py inspect
 
       - name: Merge current upstream without rewriting patch history
         if: steps.existing.outputs.skip != 'true'
@@ -81,6 +77,7 @@ jobs:
         if: steps.existing.outputs.skip != 'true'
         run: |
           python3 fork/test_release_workflow.py
+          python3 fork/test_release_publish.py
           bash fork/release-meta-test.sh
           bash fork/magpie-fork-update-test.sh
 
@@ -115,7 +112,7 @@ jobs:
       - name: Build Linux AMD64 release
         if: steps.existing.outputs.skip != 'true'
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION: ${{ steps.existing.outputs.version || steps.meta.outputs.version }}
         run: |
           make release-cli TARGETS=linux/amd64 VERSION="$VERSION"
           cd dist
@@ -137,7 +134,8 @@ jobs:
           fi
 
       - name: Publish fork release
-        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
+        if: inputs.verify_only != true
+        id: published
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
@@ -155,25 +153,15 @@ jobs:
 
           The Linux AMD64 binary is verified on dev by the attached SHA-256 sidecar before installation.
           EOF
-          gh release create "$RELEASE_TAG" \
-            dist/magpie-cli-linux-amd64 \
-            dist/magpie-cli-linux-amd64.sha256 \
-            dist/magpie-fork-update \
-            dist/magpie-fork-update.service \
-            dist/magpie-fork-update.timer \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --latest \
-            --title "$RELEASE_NAME" \
-            --notes-file release-notes.md
+          python3 fork/release_publish.py publish
 
       - uses: oras-project/setup-oras@v1
-        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
+        if: inputs.verify_only != true
 
       - name: Publish latest verified dev artifact
-        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
+        if: inputs.verify_only != true
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION: ${{ steps.published.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |

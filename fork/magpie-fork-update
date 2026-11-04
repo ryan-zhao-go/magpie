@@ -12,6 +12,7 @@ health_tries=${MAGPIE_HEALTH_TRIES:-20}
 health_delay=${MAGPIE_HEALTH_DELAY:-1}
 bin_dir=$(dirname "$bin")
 backup=$bin.previous
+digest_cache=$bin.fork-digests
 lock=$bin.fork-update.lock
 tmp=
 rollback_needed=0
@@ -25,6 +26,12 @@ hash_file() {
     printf 'no SHA-256 tool found (sha256sum or shasum)\n' >&2
     return 1
   fi
+}
+
+remember_digest() {
+  printf '%s %s\n' "$expected_digest" "$release_digest" >"$tmp/digests"
+  chmod 0600 "$tmp/digests"
+  mv -f "$tmp/digests" "$digest_cache"
 }
 
 download_release_asset() {
@@ -65,7 +72,7 @@ cleanup() {
     systemctl --user start "$service" >/dev/null 2>&1 || true
   fi
   if [[ -n $tmp ]]; then
-    rm -f "$tmp/$asset_name" "$tmp/$blob_name" "$tmp/token.json" "$tmp/manifest.json" "$tmp/meta" "$tmp/previous"
+    rm -f "$tmp/$asset_name" "$tmp/$blob_name" "$tmp/token.json" "$tmp/manifest.json" "$tmp/meta" "$tmp/previous" "$tmp/digests"
     rmdir "$tmp" 2>/dev/null || true
   fi
   rmdir "$lock" 2>/dev/null || true
@@ -132,6 +139,15 @@ if [[ -n ${extra:-} ]]; then
   exit 1
 fi
 expected_digest=${layer_digest#sha256:}
+current_digest=$(hash_file "$bin")
+if [[ -f $digest_cache ]]; then
+  read -r cached_layer cached_binary cached_extra <"$digest_cache" || true
+  if [[ ${cached_layer:-} =~ ^[0-9a-f]{64}$ && ${cached_binary:-} =~ ^[0-9a-f]{64}$ &&
+        -z ${cached_extra:-} && $cached_layer == "$expected_digest" && $cached_binary == "$current_digest" ]]; then
+    printf 'magpie fork already matches the latest verified release\n'
+    exit 0
+  fi
+fi
 blob_url="https://ghcr.io/v2/$image/blobs/$layer_digest"
 download_release_asset "$tmp/$blob_name" 1500 "$blob_url" \
   --continue-at - \
@@ -157,6 +173,7 @@ release_digest=$(hash_file "$tmp/$asset_name")
 
 current_digest=$(hash_file "$bin")
 if [[ $current_digest == "$release_digest" ]]; then
+  remember_digest
   printf 'magpie fork already matches the latest release\n'
   exit 0
 fi
@@ -192,4 +209,5 @@ if [[ $healthy -ne 1 || $installed_digest != "$release_digest" ]]; then
 fi
 
 rollback_needed=0
+remember_digest
 printf 'installed the latest magpie fork release\n'

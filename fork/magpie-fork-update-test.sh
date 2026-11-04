@@ -88,6 +88,7 @@ case "$url" in
   https://ghcr.io/v2/ryan-zhao-go/magpie-fork/manifests/latest)
     cp "$FIXTURE_DIR/manifest.json" "$out" ;;
   https://ghcr.io/v2/ryan-zhao-go/magpie-fork/blobs/sha256:*)
+    printf '%s\n' blob >>"$SYSTEMCTL_LOG.downloads"
     cp "$FIXTURE_DIR/magpie-cli-linux-amd64.gz" "$out" ;;
   https://github.com/*|https://raw.githubusercontent.com/*|https://api.github.com/*)
     exit 28 ;;
@@ -121,8 +122,18 @@ setup_case success
 [ "$(cat "$SYSTEMCTL_LOG")" = $'--user stop magpie.service\n--user start magpie.service' ] || fail "service was not stopped and started exactly once"
 
 before=$(wc -l <"$SYSTEMCTL_LOG")
+downloads=$(wc -l <"$SYSTEMCTL_LOG.downloads")
 "$updater"
 [ "$(wc -l <"$SYSTEMCTL_LOG")" -eq "$before" ] || fail "an unchanged release restarted the service"
+[ "$(wc -l <"$SYSTEMCTL_LOG.downloads")" -eq "$downloads" ] || fail "an unchanged verified release downloaded the binary again"
+
+printf 'corrupt cache\n' >"$bin.fork-digests"
+"$updater"
+[ "$(wc -l <"$SYSTEMCTL_LOG.downloads")" -eq "$((downloads + 1))" ] || fail "a corrupt digest cache was trusted"
+
+make_binary "$bin" tampered 1
+"$updater"
+[ "$("$bin" version)" = new ] || fail "a changed installed binary bypassed verification"
 
 setup_case staged-official
 make_binary "$case_dir/fixtures/official" official 1

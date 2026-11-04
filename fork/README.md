@@ -20,6 +20,21 @@ Scheduled runs continue to use `feature/answer-timeout` and current upstream
 `main`. The gateway gate covers both the upstream group budget and the fork's
 answer-timeout and reasoning-recovery regressions.
 
+A release is created as a draft and published only when all five assets are
+uploaded. A retry preserves an existing release's version and binary, uploads
+only missing draft assets, and refuses a different source identity. An existing
+complete release skips rebuilding but does not skip GHCR repair: its original
+binary is downloaded and checksum-verified before publishing the OCI layer
+and restoring `latest`. A failure is rechecked before retrying so an API timeout
+does not create a duplicate release. Verification-only runs write neither target.
+
+The dev updater caches only a verified OCI-layer/binary digest pair beside its
+binary. On each timer tick it still reads the current manifest and hashes the
+installed executable. Matching both permits a no-download, no-restart check;
+an invalid cache or changed executable forces full verification. A corrupt
+download cannot update the cache. The timer remains enabled across logout via
+systemd user lingering and reports failures in its unit journal.
+
 An internal compaction summary is held for its whole result (`askWhole`),
 even when its upstream request asks for a stream. It does not receive client
 transport keepalives or turn its own HTTP errors into client-stream events.

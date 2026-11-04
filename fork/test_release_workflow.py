@@ -25,6 +25,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("github.ref_name", source)
         self.assertIn('git fetch --force --tags upstream "$UPSTREAM_REF"', source)
 
+    def test_existing_release_does_not_skip_oci_recovery(self):
+        source = workflow.read_text()
+        for name in ("Publish fork release", "Publish latest verified dev artifact"):
+            block = source.split(f"- name: {name}\n", 1)[1].split("\n      - ", 1)[0]
+            self.assertNotIn("steps.existing.outputs.skip", block)
+            self.assertIn("inputs.verify_only != true", block)
+        self.assertIn("steps.published.outputs.version", source)
+        self.assertIn("steps.existing.outputs.version || steps.meta.outputs.version", source)
+
     def test_merge_preserves_resolved_patch_history(self):
         source = workflow.read_text()
         self.assertIn('git merge --no-edit "$UPSTREAM_SHA"', source)
