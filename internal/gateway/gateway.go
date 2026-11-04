@@ -3047,7 +3047,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	var ownMs, retriedMs, queuedMs int64
 	var firstBegan time.Time // when the first try began
 	streams := streamOf(body)
-	kept.streams = streams
+	kept.streams = streams && !wantsWhole(r.Context())
 	kept.codex = fromCodex(r.Header) || codexForClaudeCode(r.Header)
 	if from == provider.Gemini {
 		streams = strings.Contains(r.URL.Path, "streamGenerateContent")
@@ -3206,7 +3206,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// filter refuses after thinking hardly ever, and held, the agent
 		// waited every request's whole thinking out.
 		hw.thinkingShown = !s.holdsThinking(c) || last
-		hw.ctx, hw.alive, hw.streams = r.Context(), kept, streams
+		hw.ctx, hw.alive, hw.streams = r.Context(), kept, streams && !wantWhole
 		// a Claude subscription account's refusal of a big conversation
 		// isn't told again to the subscription's other accounts
 		// (tooBigToRetell), decided before the try, for its refusal not to

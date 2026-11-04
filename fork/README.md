@@ -20,6 +20,12 @@ Scheduled runs continue to use `feature/answer-timeout` and current upstream
 `main`. The gateway gate covers both the upstream group budget and the fork's
 answer-timeout and reasoning-recovery regressions.
 
+An internal compaction summary is held for its whole result (`askWhole`),
+even when its upstream request asks for a stream. It does not receive client
+transport keepalives or turn its own HTTP errors into client-stream events.
+This preserves a byte-cap refusal as 413 so compaction can retry as text and
+fall back locally. Real streaming callers still receive their keepalives.
+
 The dev updater accepts only the `application/vnd.magpie.binary.gzip` layer
 from that exact GHCR repository, verifies its compressed OCI SHA-256 digest
 and size, decompresses and preflights the candidate, then stops the daemon for

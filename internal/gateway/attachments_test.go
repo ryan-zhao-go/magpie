@@ -120,6 +120,7 @@ func TestHeldGeminiStreamSendsNoComment(t *testing.T) {
 	}{{provider.Gemini, false}, {provider.Anthropic, true}, {provider.Chat, true}} {
 		rec := httptest.NewRecorder()
 		h := newHoldWriter(rec, true)
+		h.streams = true
 		h.alive = &keptAlive{proto: c.proto, at: time.Now().Add(-time.Hour)}
 		h.keepAlive()
 		if got := strings.Contains(rec.Body.String(), ": keepalive"); got != c.want {

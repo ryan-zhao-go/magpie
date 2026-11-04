@@ -236,6 +236,7 @@ func TestWithoutOldImagesEachProtocol(t *testing.T) {
 // compaction is asked as text and then made without a model, not sent
 // again into the compaction guard's hold.
 func TestCompactionOverByteCapEveryTime(t *testing.T) {
+	quietFast(t)
 	up := &capped{proto: provider.Responses, most: 0, status: 400, ctype: "application/json", body: commandCodeCap}
 	cappedOn(t, up)
 	code, body := codexPost(t, screenshotSession(true))
