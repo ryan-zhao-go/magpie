@@ -2368,6 +2368,9 @@ body .foot .status.lift { white-space: normal; overflow-wrap: anywhere; text-ove
 .pop li.cur .check { display: inline-flex; }
 .pop li.group { height: 22px; padding: 6px 8px 0; font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); pointer-events: none; }
 .pop li.group:not(:first-child) { margin-top: 2px; }
+/* the agent's own sign-in, after a group of its own models' name: quiet, in the sentence's own case */
+.pop li.group.own { gap: 4px; white-space: nowrap; }
+.pop li.group .own-sign { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; letter-spacing: 0; font-weight: 500; }
 .pop li.reset { margin-bottom: 3px; }
 .pop li.reset .v { color: var(--fg); }
 .pop li.reset .ic { opacity: .75; }
@@ -3048,6 +3051,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .acc-line > .quota-refresh { width: 14px; margin: 0 0 0 -5px; opacity: 1; }
 .acc .aq-w { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .acc .aq-until { white-space: nowrap; }
+/* an account's own Check in now, at its usage line's end (xwoffice_91592) */
+.acc .aq > .ci-acct { flex: none; margin: -2px 0 -2px auto; padding: 1px 7px; font-size: 10.5px; }
 .acc .aq-track { width: 54px; height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; }
 .acc .aq-track i { display: block; height: 100%; border-radius: inherit; background: var(--fg-2); }
 /* the account's usage cap: a tick across the meter where it stands */
@@ -3857,6 +3862,8 @@ input.words.compact-num { flex: none; width: 76px; font-variant-numeric: tabular
 input.words.rule-kind { flex: none; width: 110px; }
 input.words.gateway-port { flex: none; width: 110px; font-variant-numeric: tabular-nums; }input.words.rule-match { flex: 1 1 auto; width: auto; min-width: 0; }
 input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; min-width: 0; }
+/* a search API that signs in as a plugin's provider, in the key's place */
+.search-signs { flex: 1 1 120px; min-width: 0; font-size: 12px; color: var(--fg-2); overflow-wrap: anywhere; }
 /* a search API's base URL (#1580): on a line of its own under the key */
 .prefs .row.search-add .val.rule-add { flex-wrap: wrap; row-gap: 6px; }
 .prefs .row.search-add input.words.search-url { flex: 1 1 100%; }

@@ -203,9 +203,12 @@ gateway's order and choice of seat don't change. Two stay two rows. See
 
 ### Routing account windows
 
-A subscription account's row in Accounts and keys shows each of its
-windows under the one figure routing went by, with when each resets
-("5 hours 40% used · resets in 2h"), as the Usage page reads them (#1833).
+A subscription account's row in Accounts and keys shows the one figure
+routing went by, and each of its windows, with when each resets
+("5 hours 40% used · resets in 2h"), on hover over that figure (the
+`.st`'s title), as the Usage page reads them (#1833). A row with no figure
+of its own (a remote's, or an account not read yet) shows its windows as
+its one line instead (`.wins`, cut to one line, all of it on hover).
 `cardOf` in [`plugins/routing/client.js`](../../internal/gui/assets/plugins/routing/client.js) matches
 the route's account to app.js's `quotas`: a `subscription` card of this
 computer (no `from`) whose provider is the account's `agent` (a plugin's
@@ -224,8 +227,10 @@ whose provider id is the remote's, a slash and the card's. The computer
 that holds the account tells its usage; this one reads nothing new. A
 Claude model's row is told Claude's cards alone and a ChatGPT model's
 Codex's; with more than one card the account's user leads each window. A
-remote whose read failed shows "Allowance unavailable" with the reason on
-hover, never a figure. See `routing-remote-windows.test.cjs`.
+remote whose read failed, or whose card of the row's family failed there
+(the remote read, its Claude's read didn't), shows "Allowance unavailable"
+with the reason on hover, never a figure and never nothing; a remote that
+holds this computer's key tells why the same way (`errRemoteHeld`). See `routing-remote-windows.test.cjs`.
 
 The refresh beside the Accounts and keys heading (`#rtReadAllowances`,
 #1834) reads them again by hand: `loadQuotas(true)`, the asked read the
@@ -238,6 +243,38 @@ On the stage, an account's seat tells the same windows in its tooltip,
 under its id (`render`, #1835). The row itself keeps one line: the
 fullest window while idle, what it is doing while it answers. See
 `routing-seat-windows.test.cjs`.
+
+### Routing account cards
+
+Each row under Accounts and keys is one cell like the others: a dot, its
+name, plan and Try now on one line, and under it what is left (or its
+rest) in full (ferock4669 and iyou00 on Discord: many keys ran the list
+on and on). The dot is green for the one in use (of a provider's rows not
+resting, the one that answered last), amber resting, red for what the
+reader has to do (`.act`: sign in again, a restriction or verification, a
+key failing with no answer), grey otherwise. Red is only on `.act` rows:
+a quota rest or old failures are muted (danzi002 on Discord, "显示的好
+乱"). How it fares (tried, answered, failed, last answered) is a line of
+its own only on a row with nothing else to say or one to act on; on the
+others (`.said`) it is in the tooltip with the models it answered, under
+its id. A folded row of keys or accounts names no models. Columns are
+`min(240px, 40vw)` wide, so a name and its Try now share a line
+(`routing-acts-calm.test.cjs`).
+`renderActs` in
+[`plugins/routing/client.js`](../../internal/gui/assets/plugins/routing/client.js)
+shows the first `ACTS_SHOWN` (8) rows of a longer list and puts the rest
+behind "Show N more" at its foot (`.rt-acts-foot`), kept across a reload
+in localStorage `magpie.routingActsAll`. The button clicked stays where it
+is on the screen while rows come in or go above it (`actMore.onclick`
+scrolls the page by what it moved). Never behind it: a row that needs
+the reader (to sign in again, resting, a model resting, failures with no
+answer, a remote whose allowance can't be read), the rows under a fold
+the reader opened themselves, and the heading of a provider with a row
+shown. A row to sign in again is drawn under its fold even while the fold
+is shut. Two more alone aren't folded. "View usage" beside it opens the
+Usage page's Overview (`window.openUsageOverview` in
+`plugins/usage/page.js`), where each account's card says it all, without
+keeping that tab as the reader's own. See `routing-acts-compact.test.cjs`.
 
 ### A provider's accounts together
 
@@ -888,7 +925,22 @@ and `update-wait.test.cjs`.
 The session readers include Cursor CLI chat stores, Cursor editor project
 transcripts and older editor `cursorDiskKV` conversations. CLI stores win
 when the same session ID has a project transcript. Editor conversations are
-read only, including at the delete API, and cannot be resumed by cursor-agent.
+read only and cannot be resumed by cursor-agent. A chat the editor still keeps
+in `state.vscdb` (its `composerData:<id>`) is never deleted, the delete API
+included: Cursor's own delete clears several keys of a database it holds open,
+and its in-memory copy, which magpie can't do from outside. A project
+transcript whose chat the editor no longer keeps (`fileMore.loose`: the store
+was read and has no such chat, or there is no store) is files of its own and
+is deleted as a CLI chat's are: `<id>/`, `<id>.jsonl` and `<id>.txt` in its
+`agent-transcripts` folder (`cursorEditorPaths`), never the folder. A store
+that can't be read says nothing, so no transcript is loose then. Each row of
+an agent magpie deletes from has its delete; one it can't delete carries
+`undeletable` (`cursor-editor`, `read-only`; `rowDeletable`), and the row's
+delete is shown off with that reason as its tooltip, never left out (ysm119 on
+Discord). A row without Resume, its terminal, Continue in, and a folder without
+its ⋯, keep hidden room for them (`lanes`, `slot` in plugins/sessions/client.js),
+so the right-hand columns line up on every row (`TestCursorRowsSayWhetherTheyCanBeDeleted`
+in `cursor_editor_delete_test.go`, `sessions-cursor-align.test.cjs`).
 Project transcripts contain no message timestamps or billing data; their
 existing file modification time supplies the activity date, and tokens and
 cost are not inferred. Database bubbles retain their own timestamps.

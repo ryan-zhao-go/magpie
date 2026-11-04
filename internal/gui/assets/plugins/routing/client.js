@@ -150,7 +150,7 @@ function routingPage(part) {
   moreDays.onclick = (e) => {
     e.stopPropagation();
     if (moreDays.classList.contains("open")) return closeProtoMenu();
-    openProtoMenu(moreDays, unseenDays.map((d) => ({ v: d.day, name: dayName(d.day), literalName: true, note: String(d.requests) })),
+    openProtoMenu(moreDays, unseenDays.map((d) => ({ v: d.day, name: dayName(d.day), literalName: true, note: fmtN(d.requests) })),
       day, (v) => { if (v !== day) lookAt(v); }, "Earlier days", "rt-days-menu");
   };
   function nameMoreDays() {
@@ -158,7 +158,7 @@ function routingPage(part) {
     moreDays.classList.toggle("on", !!picked);
     moreDays.setAttribute("aria-pressed", String(!!picked));
     moreDays.replaceChildren(el("span", "", picked ? dayName(picked.day) : t("Earlier days")),
-      ...(picked ? [el("small", "", String(picked.requests))] : []), svg(CHEV, 10, 1.6));
+      ...(picked ? [count(picked.requests)] : []), svg(CHEV, 10, 1.6));
   }
   function fitDays() {
     if (!dayBar.clientWidth) return; // out of sight: fitted when it shows
@@ -214,6 +214,31 @@ function routingPage(part) {
     }
   };
   actHead.append(actLabel, actRead, el("span", "grow"), actNote);
+  // under the list: the rest of a long one, behind Show N more (kept
+  // across a reload, magpie.routingActsAll), and the way to each
+  // account's allowances in full, the Usage page's Overview
+  // (ferock4669, iyou00 on Discord: many keys ran the list on and on)
+  const actFoot = el("div", "rt-acts-foot");
+  const actMore = el("button", "text rt-acts-more");
+  actMore.type = "button";
+  let actsAll = false;
+  try { actsAll = localStorage.getItem("magpie.routingActsAll") === "1"; } catch {}
+  actMore.onclick = () => {
+    actsAll = !actsAll;
+    try { localStorage.setItem("magpie.routingActsAll", actsAll ? "1" : "0"); } catch {}
+    // the button clicked stays where it is on the screen, the rows coming
+    // in (or going) above it: neither engine's scroll anchoring does it
+    // for every place the page can be scrolled to
+    const v = $("#view-routing"), y = actMore.getBoundingClientRect().top;
+    steady(() => renderActs(listed()));
+    const moved = actMore.getBoundingClientRect().top - y;
+    if (moved) v.scrollTop += moved;
+  };
+  const actUsage = el("button", "text rt-acts-usage");
+  actUsage.type = "button";
+  actUsage.dataset.feature = "usage"; // it opens on the Usage page
+  actUsage.onclick = () => window.openUsageOverview();
+  actFoot.append(actMore, el("span", "grow"), actUsage);
   const hist = el("div", "rt-cols");
   const colA = el("div", "rt-col"), colB = el("div", "rt-col");
   const filters = el("div", "rt-filters");
@@ -260,7 +285,7 @@ function routingPage(part) {
   };
   filters.append(dayBar, groupBar);
   colA.append(reqHead, filters, reqs);
-  colB.append(actHead, acts);
+  colB.append(actHead, acts, actFoot);
   hist.append(colA, colB);
   more.append(hist);
   // the narrow and wide layouts go by a box's own width, as container
@@ -384,6 +409,17 @@ function routingPage(part) {
     return t("{n} d", { n: Math.round(m / 1440) });
   }
   const took = (ms = 0) => ms < 1000 ? t("{n} ms", { n: ms }) : t("{n} s", { n: (ms / 1000).toFixed(ms < 10e3 ? 1 : 0) });
+  // A reply in flight (#4951): the bytes the agent has had, what the content
+  // is worth in tokens, and how long ago content last came. For requests
+  // still out only: an ended row has its own metrics, which say more.
+  const liveSize = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MiB"
+    : n >= 1024 ? (n / 1024).toFixed(1) + " KiB" : Math.round(n || 0) + " B";
+  // an estimate always carries ≈, and with no rate learned yet there is none
+  const liveTokens = (r) => r.estTok ? t("≈ {n} tokens", { n: tokens(r.estTok) }) : "";
+  // quiet is not failed: the row says how long ago, and its dot stops
+  // pulsing after liveQuietMs with no content
+  const liveQuietMs = 15e3;
+  const liveSince = (r, now = Date.now()) => r.contentAt ? t("{d} ago", { d: dur(Math.max(0, now - r.contentAt)) }) : "";
   // (the formats made once: made for each call, they were much of what the
   // accounts' countdowns cost), made again when the GUI's language changes
   let fmtLang = null, HM, WD;
@@ -498,6 +534,10 @@ function routingPage(part) {
     if (prompt) s += " · " + t("request cache hit rate {p}", { p: pct(100 * read / prompt) });
     return s;
   }
+  // a count short (fmtN: 12.3K, 1.2 万), exact on hover when they differ
+  // (skyhuang1994 on Discord: "看这么长串的数字有点懵逼")
+  const exactN = (n) => fmtN(n) == String(n) ? "" : ledNum(n);
+  const count = (n) => Object.assign(el("small", "", fmtN(n)), { title: exactN(n) });
   const tokens = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(Math.round(n));
   const pct = (n) => Math.round(n) + "%";
   // an account's window as Settings' allowance display has it, how much is
@@ -546,6 +586,7 @@ function routingPage(part) {
     weight: ["By weight", "Requests spread over the keys or accounts by the weight set beside each: one weighing 3 takes three requests for every one weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with it as Stays says."],
     free: ["Free first", "Requests go to what costs nothing first: the models their vendor serves at no cost to this subscription's allowance or credits, in their listed order, and only when those can't answer to one that spends them. Nothing that cost nothing is left unused."],
     cheap: ["Cheapest first", "Requests go to the member whose model costs least now, by its price a million tokens in and out at this hour — a vendor's peak hours count double where it bills them so, as DeepSeek and Ollama Cloud do — and the cheaper cache read when two cost the same; those that cost the same keep their listed order, and one with no known price goes last."],
+    expiring: ["Free quota by expiry", "Free quota by expiry: the accounts on a free plan, or whose model costs nothing there, go first, the one whose free quota is lost soonest first — at its next reset, or when its credits expire if sooner; once it is used up, the next. A paid one takes requests only when no free one has quota left, the paid as Smart orders them."],
     fast: ["Speed first", "Requests go to the one that has answered this model fastest lately, by its time to the first token and how fast it writes; those within a tenth of each other keep their listed order. One not measured lately gets one request in five, so it is measured again, and one that fails is passed over while it rests."],
   };
   // modeOf: a routing's name and what it does, a JS gateway plugin's
@@ -593,7 +634,12 @@ function routingPage(part) {
   // noURLWord: its keys are all set to a protocol its provider has no URL
   // for, so it went out on the URLs it has (#1702)
   const noURLWord = (w) => t("key set to {api} only, no {api} URL · sent on the others", { api: API[w.noURL] || w.noURL });
-  const group = (w) => w.used >= 98 ? "spent" : w.used >= 90 ? "low" : "fine";
+  // group is the tier Smart and Use before expiry put one in: 90% of a
+  // week alone (weekLow) is kept with those that have room, as what it
+  // has left is lost at its reset (ysicing_01858 on Discord)
+  const group = (w) => w.used >= 98 ? "spent" : w.used >= 90 && !w.weekLow ? "low" : "fine";
+  // tiered: its routing holds one running low back (routes.seatTier)
+  const tiered = (w) => !w.routing || w.routing === "pace";
   const renews = (w) => (w.renews || []).map((s) => known0(s) ? at(s) : 0);
   // usedRenews is when the window w.used is the share of renews: a row
   // says the two together, so they are of one window, a Factory account's
@@ -757,6 +803,16 @@ function routingPage(part) {
         if (f.free) return restedTo(t("it costs nothing there, so it's spent first."))
           || t("Free first: {model} costs nothing on {who}, so it's tried before any that spends the allowance.", { model: f.model, who: w });
         return t("Free first: every one that costs nothing is spent or resting, so {model} on {who}, which spends the allowance, is next.", { model: f.model, who: w });
+      case "expiring": {
+        // Free quota by expiry (routes.FreeExpiring): when a free one's
+        // quota is first lost, as the gateway read it (Weighed.expires)
+        const left = f.expires && at(f.expires) - at(r.time);
+        if (f.free && left > 0) return restedTo(t("its free quota is lost soonest, in {d}.", { d: dur(left) }))
+          || t("Free quota by expiry: {who}'s free quota is lost soonest, in {d}, so it's spent first.", { who: w, d: dur(left) });
+        if (f.free) return restedTo(t("it has free quota left, so it's spent before any paid one."))
+          || t("Free quota by expiry: {who} has free quota left, so it's spent before any paid one.", { who: w });
+        return t("Free quota by expiry: no free one has quota left, so {who}, which is paid for, is next.", { who: w });
+      }
       case "cheap": {
         // Cheapest first (routes.Cheapest): its price now, as the gateway
         // read it for this request (Weighed.price)
@@ -1423,6 +1479,10 @@ function routingPage(part) {
     if (tr.replan)
       return t("{who} answered {status} · {fail}, and every member had failed with an error that may pass, so after {d} the {n} of them are asked again, in turn, before any of the reply reaches {agent}. The group waits up to {p} for one to answer.",
         { who: name, status: tr.status, fail: failWord(tr.fail), d: took(tr.again), n: tr.replan, p: took((tr.patience || 0) * 1000), agent });
+    // kept on it for its cache, so asked once more before it moves (jiabubu)
+    if (tr.again && tr.kept)
+      return t("{who} answered {status} · {fail}, a failure that may pass. The conversation is kept on {who} for what its vendor cached of it, so it is asked once more in {d} before the request moves to another.",
+        { who: name, status: tr.status, fail: failWord(tr.fail), d: took(tr.again) });
     if (tr.again)
       return t("{who} answered {status} · {fail}, and nobody else is left to ask — a failure that may pass, so it is tried again in {d}, before any of the reply reaches {agent}.",
         { who: name, status: tr.status, fail: failWord(tr.fail), d: took(tr.again), agent });
@@ -1497,6 +1557,9 @@ function routingPage(part) {
   // more of them, else open. Which the reader opened or folded is kept, by
   // provider and model, or "group/<id>", whatever the default.
   const FOLD_AT = 3, LONG = 6;
+  // Accounts and keys shows this many rows of a longer list, and every
+  // one needing the reader, the rest behind Show N more
+  const ACTS_SHOWN = 8;
   const folds = new Map();  // foldKey → { li, wire, st, tg, n, w, ids, up, open, pk }
   let keysOpen = new Set(), keysShut = new Set();
   try { keysOpen = new Set(JSON.parse(localStorage.getItem("magpie.routingKeysOpen") || "[]")); } catch {}
@@ -2680,7 +2743,17 @@ function routingPage(part) {
       else if (w.window) s = t("request longer than its {n} window · passed over", { n: ctxShort(w.window) });
       // a row another request weighed, answering that one: the header
       // tells of this request, so it says the answer is not this one's
-      else if (trying.has(id)) { s = (r.id !== cur.id && agents.size <= 1 ? t("answering another request…") : t("answering…")) + (said && " · " + said); named = titleOf(trying.get(id)); }
+      else if (trying.has(id)) {
+        // this request's progress beside the account answering it; not
+        // when the account answers another request, whose numbers they are
+        const live = r.id === cur.id ? liveParts(r).map(([value]) => value).join(" · ") : "";
+        // gone quiet, it says the numbers only: "answering…" would read as
+        // the vendor still writing
+        const hushed = live && r.contentAt && Date.now() - r.contentAt >= liveQuietMs;
+        s = hushed ? live
+          : (r.id !== cur.id && agents.size <= 1 ? t("answering another request…") : t("answering…")) + (said && " · " + said) + (live ? " · " + live : "");
+        named = titleOf(trying.get(id));
+      }
       else if (answered.has(id)) { s = (agents.size > 1 ? t("answered {agent}", { agent: agentName(r.agent) }) : t("answered this request")) + (said && " · " + said); named = titleOf(r); }
       else if (gave.has(id)) s = t("{status} · {fail} · passed to {agent}", { status: gave.get(id).status, fail: failWord(gave.get(id).fail), agent: agentName(r.agent) });
       else if (went.has(id)) s = t("{status} · {fail} · went on to the next", { status: went.get(id).status, fail: failWord(went.get(id).fail) });
@@ -2697,9 +2770,9 @@ function routingPage(part) {
       else if (w.known) {
         const soon = usedRenews(w);
         s = w.creditsLast && !r.order[0]?.creditsLast ? quota(w, "{n} used · on credits · after the others", "{n} left · on credits · after the others")
-          : !w.routing && w.used >= 98 && w.credits ? quota(w, "{n} used · on credits", "{n} left · on credits")
-          : !w.routing && w.used >= 98 ? quota(w, "{n} used · all but used up", "{n} left · all but used up")
-          : !w.routing && w.used >= 90 ? quota(w, "{n} used · kept for last", "{n} left · kept for last")
+          : tiered(w) && group(w) === "spent" && w.credits ? quota(w, "{n} used · on credits", "{n} left · on credits")
+          : tiered(w) && group(w) === "spent" ? quota(w, "{n} used · all but used up", "{n} left · all but used up")
+          : tiered(w) && group(w) === "low" ? quota(w, "{n} used · kept for last", "{n} left · kept for last")
           : (b = behindWhy(r, w)) === "kept" ? quota(w, "{n} used · conversation kept on another", "{n} left · conversation kept on another")
           : b === "sooner" && soon ? quota(w, "{n} used · renews in {d} · one renewing sooner goes first", "{n} left · renews in {d} · one renewing sooner goes first", { d: dur(soon - n) })
           : soon ? quota(w, "{n} used · renews in {d}", "{n} left · renews in {d}", { d: dur(soon - n) }) : quota(w, "{n} used", "{n} left");
@@ -2742,7 +2815,11 @@ function routingPage(part) {
       const flying = !resting && (trying.has(id) || onWire.has(id));
       const on = flying || (!resting && answered.has(id));
       lightRow(row.li, row.wire, on, flying);
-      row.li.classList.toggle("low", !!(!w.routing && w.known && w.used >= 90));
+      // quiet: the reply is still out but no content came for liveQuietMs;
+      // the dot stops pulsing, as it has not failed
+      const quiet = flying && r.id === cur.id && !cur.done && cur.contentAt && Date.now() - cur.contentAt >= liveQuietMs;
+      row.li.classList.toggle("quiet", !!quiet);
+      row.li.classList.toggle("low", !!(tiered(w) && w.known && group(w) !== "fine"));
       row.li.classList.toggle("rest", !!resting || gave.has(id));
       row.li.classList.toggle("left", !!w.unlisted || !!w.window);
       // in the colour of the agent whose request is on it: the one it
@@ -3497,7 +3574,7 @@ function routingPage(part) {
       rerouted: done.reduce((n, r) => n + r.tries.filter((tr, i) => tr.rest && i < r.tries.length - 1).length, 0),
       errors: done.filter(failedRoute).length,
     } : traceTotals;
-    [counts.requests, counts.rerouted, counts.errors].forEach((n, i) => setText(statB[i], String(n)));
+    [counts.requests, counts.rerouted, counts.errors].forEach((n, i) => { setText(statB[i], fmtN(n)); setAttr(statB[i], "title", exactN(n)); });
     setAttr(stats, "title", t(scoped ? "Counts for the requests in this list" : "Counts since the gateway started"));
     const failed = rs.some(failedRoute), btn = statB[2].parentElement;
     setAttr(btn, "aria-disabled", String(!failed));
@@ -3544,7 +3621,7 @@ function routingPage(part) {
   function renderDays() {
     const b = (d, label, n) => {
       const x = el("button", "rt-day" + (d === day ? " on" : ""));
-      x.append(el("span", "", label), ...(n != null ? [el("small", "", String(n))] : []));
+      x.append(el("span", "", label), ...(n != null ? [count(n)] : []));
       x.setAttribute("aria-pressed", String(d === day));
       x.onclick = () => { if (d !== day) lookAt(d); };
       return x;
@@ -3677,9 +3754,9 @@ function routingPage(part) {
     for (const g of groups.values()) {
       let x = sessionRows.get(g.key);
       if (!x) {
-        const b = el(g.key ? "button" : "div", "rt-session"), name = el("span", "nm"), meta = el("span", "summary"), cost = el("span", "cost"), arrow = el("span", "arrow");
-        b.append(arrow, name, meta, cost);
-        x = { b, name, meta, cost, arrow };
+        const b = el(g.key ? "button" : "div", "rt-session"), name = el("span", "nm"), dir = el("span", "dir"), meta = el("span", "summary"), cost = el("span", "cost"), arrow = el("span", "arrow");
+        b.append(arrow, name, dir, meta, cost);
+        x = { b, name, dir, meta, cost, arrow };
         if (g.key) b.onclick = () => {
           if (closedSessions.has(g.key)) closedSessions.delete(g.key); else closedSessions.add(g.key);
           steady(renderHist);
@@ -3706,11 +3783,17 @@ function routingPage(part) {
       // for one purpose without renaming a chat that also made helper calls.
       const memory = g.r.agent === "codex" && g.rows.every((r) => purposeOf(r.kind) === "kind:memory_consolidation");
       const suggestions = g.r.agent === "codex" && g.rows.every((r) => purposeOf(r.kind) === "kind:ambient_suggestions");
-      const name = g.rows.find((r) => r.sessionTitle)?.sessionTitle || otherTitles.get(ownKey(g.r)) || (memory ? t("Background memory task") : suggestions ? t("Background prompt suggestions") : "");
+      // its title: the agent's own, else its first prompt, on one line
+      // (flandern1211_58540 on Discord: a folder and an id told nothing)
+      const name = (g.rows.find((r) => r.sessionTitle)?.sessionTitle || otherTitles.get(ownKey(g.r)) || (memory ? t("Background memory task") : suggestions ? t("Background prompt suggestions") : "")).replace(/\s+/g, " ").trim();
       // the folder the session works in, as its latest request said it
       // (#1068): it tells two runs of one agent apart before their titles
       const folder = g.key ? g.rows.find((r) => r.folder)?.folder || "" : "";
-      setText(x.name, g.key ? [agentName(g.r.agent), folder, name || (folder ? "" : groupSession(g.r))].filter(Boolean).join(" · ") : t("No session ID"));
+      // the title first; the folder after it, quieter, or in its place
+      // when there is no title; the id only when there is neither
+      setText(x.name, g.key ? [agentName(g.r.agent), name || folder || groupSession(g.r)].filter(Boolean).join(" · ") : t("No session ID"));
+      setText(x.dir, name && folder ? folder : "");
+      if (x.dir.hidden !== !(name && folder)) x.dir.hidden = !(name && folder);
       const purpose = memory ? t("Codex is organizing memories from earlier chats in the background. This can continue after a chat finishes.") + "\n"
         : suggestions ? kindWhy(g.r) + "\n"
         : g.rows.some((r) => r.parentMatched) ? t("Title requests were automatically matched using the prompt and the applied chat title.") + "\n" : "";
@@ -3873,8 +3956,50 @@ function routingPage(part) {
       rowsMoved = true;
     }
     x.r = r;
+    // a row is built again only when what it says changes (#3731); the live
+    // numbers aren't in its sig, so they are changed in place
+    paintLive(x.b, r);
     if (x.b.getAttribute("aria-pressed") !== sel) x.b.setAttribute("aria-pressed", sel);
     return x.b;
+  }
+  // liveParts: a request in flight's numbers, [value, help], for its row and
+  // for the account answering it
+  function liveParts(r, now = Date.now()) {
+    if (r.done || !r.bytes) return [];
+    const parts = [[liveSize(r.bytes), t("How much of this reply has reached the client, framing included")]];
+    if (r.estTok) parts.push([liveTokens(r), t("What the words written so far are worth in output tokens, learned per provider and model")]);
+    if (r.contentAt) parts.push([liveSince(r, now), t("How long ago the model last wrote something. A quiet reply is not a failed one")]);
+    return parts;
+  }
+  // liveCells: those numbers as the row's cells, unlabelled (each value
+  // carries its unit), found again by paintLive by their .recv class
+  function liveCells(r, now = Date.now()) {
+    return liveParts(r, now).map(([value, help]) => ["recv", "", value, help]);
+  }
+  // paintLive changes the cells in place, or adds or removes them all when
+  // their count changed (a new number, or the request ended)
+  function paintLive(button, r) {
+    const meta = button.querySelector(".meta");
+    if (!meta) return;
+    const cells = liveCells(r);
+    const had = [...meta.querySelectorAll(".rt-metric.recv")];
+    if (had.length !== cells.length) {
+      had.forEach((c) => c.remove());
+      cells.forEach((c) => meta.append(metricElement(c, true)));
+      meta.hidden = !meta.children.length;
+      return;
+    }
+    cells.forEach(([cls, label, value, help], i) => {
+      const cell = had[i];
+      const v = cell.querySelector(".v");
+      if (v && v.textContent !== value) v.textContent = value;
+      if (cell.title !== help) cell.title = help;
+    });
+  }
+  // with nothing written, no poll answers and "ago" would stand still: the
+  // page's second paints the rows in flight again
+  function livePaint() {
+    for (const x of reqRows.values()) if (x.r && !x.r.done && x.r.bytes) paintLive(x.b, x.r);
   }
   // A day of history is up to 2,000 requests, and a row is ~20 elements:
   // all of them in the list, a day picked took the page 0.4–0.7s here and
@@ -4143,7 +4268,10 @@ function routingPage(part) {
     const info = el("span", "meta");
     if (meta.length) info.append(el("span", "retry-count", meta.join(" · ")));
     info.append(...metrics.map((m) => metricElement(m, true)));
-    info.hidden = !metrics.length && !meta.length;
+    // a request in flight: its progress where an ended row's metrics go
+    const live = liveCells(r);
+    for (const cell of live) info.append(metricElement(cell, true));
+    info.hidden = !metrics.length && !meta.length && !live.length;
     b.append(when, asked, to, info);
 
     b.title = title;
@@ -4185,8 +4313,10 @@ function routingPage(part) {
     const mine = quotas.filter((q) => q.from && q.kind === "subscription" && (q.provider === w.provider || q.provider.startsWith(w.provider + "/")));
     const cards = mine.filter((q) => q.provider !== w.provider && !q.error && q.windows?.length && (!fam || q.provider === w.provider + "/" + fam));
     if (!cards.length) {
-      // the remote's own card, saying why nothing was read from it
-      const bad = mine.find((q) => q.provider === w.provider && q.error);
+      // the remote's own card, saying why nothing was read from it, or
+      // the account's card there saying its read failed (Usage shows it)
+      const bad = mine.find((q) => q.provider === w.provider && q.error)
+        || mine.find((q) => q.provider !== w.provider && q.error && (!fam || q.provider === w.provider + "/" + fam));
       return bad ? [{ text: t("Allowance unavailable — hover for why"), title: bad.error }] : [];
     }
     const out = [];
@@ -4293,19 +4423,35 @@ function routingPage(part) {
     // after them: laid out in columns, a heading at a column's foot over
     // nothing, its accounts at the next one's top, WebKit having no
     // break-after: avoid (Jiabubu on Discord)
-    const put = (e, leads) => {
+    // each block put, with its provider and whether it is kept in sight:
+    // one needing the reader (an error, a rest, a sign-in), or under a
+    // fold the reader opened themselves. Show N more never hides those
+    const meta = new Map();
+    const put = (e, leads, keep = false) => {
       if (leads) return lead.push(e);
-      if (!lead.length) return out.push(e);
-      const b = el("div", "rt-lead");
-      b.append(...lead.splice(0), e);
+      const b = lead.length ? el("div", "rt-lead") : e;
+      if (lead.length) b.append(...lead.splice(0), e);
       out.push(b);
+      meta.set(b, { prov, keep, n: b === e ? 1 : b.querySelectorAll(".rt-act").length });
     };
+    // refused for its sign-in, and not answered since
+    const needsSignIn = (a) => a.w.kind === "account" && a.authAt > a.last;
     // each provider's keys and accounts, gathered once: each of hundreds
     // of keys looked through the whole list for its own (#3164)
     const kin = new Map(), kinOf = (w) => w.provider + "\u0000" + w.kind;
     for (const a of list) { const k = kinOf(a.w); kin.has(k) ? kin.get(k).push(a) : kin.set(k, [a]); }
+    // the one in use, a dot of its own: of each provider's not resting,
+    // the one that answered last (danzi002 on Discord: which account is
+    // in use, which are out and when each is back, at a glance)
+    const inUse = new Map();
+    for (const a of list) {
+      if (!a.last || (a.rest && at(a.rest.until) > n)) continue;
+      const u = inUse.get(a.w.provider);
+      if (!u || a.last > u.last) inUse.set(a.w.provider, a);
+    }
     for (const a of list) {
       const w = a.w;
+      let opened = false;
       if (w.provider !== prov) {
         prov = w.provider;
         const h = el("div", "rt-prov");
@@ -4327,8 +4473,12 @@ function routingPage(part) {
         const ks = kin.get(kinOf(w));
         if (ks.length >= FOLD_AT) {
           const pk = w.provider + (w.kind === "account" ? "/@" : "/*"), open = isOpen(pk, w.kind === "account" && ks.length < LONG);
-          if (ks[0] === a) put(keysRow(ks, pk, open, n, w.kind), open);
-          if (!open) continue;
+          // folded, an account to sign in again is still drawn under it:
+          // what the reader has to fix is never folded away
+          const signIns = !open && ks.some(needsSignIn);
+          opened = open && keysOpen.has(pk);
+          if (ks[0] === a) put(keysRow(ks, pk, open, n, w.kind), open || signIns, ks.some((k) => needsSignIn(k) || (k.rest && at(k.rest.until) > n)));
+          if (!open && !needsSignIn(a)) continue;
         }
       }
       const row = el("div", "rt-act");
@@ -4336,7 +4486,7 @@ function routingPage(part) {
       // a provider's own row: its model, the provider's name is the heading
       if (w.kind === "provider") name.append(el("b", "", w.model || w.name));
       else name.append(el("b", "", who(w)), el("span", "", w.plan || (w.kind === "key" ? t("API key") : "")));
-      let st, cls = "";
+      let st, cls = "", asOf = "";
       const resting = a.rest && at(a.rest.until) > n;
       // its models resting alone, while the account answers its others:
       // a line of their own, naming them, under what the account has left
@@ -4348,7 +4498,10 @@ function routingPage(part) {
       else if (w.known) {
         const soon = usedRenews(w);
         st = soon && soon <= n ? quota(w, "{n} used at {time}; it has renewed since", "{n} left at {time}; it has renewed since", { time: clock(a.at) })
-          : (soon ? quota(w, "{n} used · renews in {d}", "{n} left · renews in {d}", { d: dur(soon - n) }) : quota(w, "{n} used", "{n} left")) + " · " + t("as of {time}", { time: clock(a.at) });
+          : (soon ? quota(w, "{n} used · renews in {d}", "{n} left · renews in {d}", { d: dur(soon - n) }) : quota(w, "{n} used", "{n} left"));
+        // when it was read is on hover: the line says what is left and
+        // when it renews, on one line in every language (danzi002)
+        if (!(soon && soon <= n)) asOf = t("as of {time}", { time: clock(a.at) });
       } else if (w.kind === "account") st = t("what's left not known yet");
       else st = "";
       const tally = el("div", "tally");
@@ -4356,7 +4509,7 @@ function routingPage(part) {
       // in again, here where the card says so. Answered since, the
       // refusals are the day's past, not what it needs now (adorable_piglet
       // on Discord: "2 需要重新登录" on an account the editor showed in use)
-      const signIn = w.kind === "account" && a.authAt > a.last;
+      const signIn = needsSignIn(a);
       const fails = Object.entries(a.fails).map(([k, v]) => `${v} ${k === "auth" && a.authAt && !signIn ? t("sign-in refused (answered since)") : failWord(k)}`);
       tally.append(
         el("span", "", t("tried {n}", { n: a.tried })),
@@ -4364,7 +4517,14 @@ function routingPage(part) {
         ...(fails.length ? [el("span", "bad", fails.join(", "))] : []),
         ...(a.last ? [el("span", "", t("last answered {time}", { time: clock(a.last) }))] : []));
       const stEl = el("div", "st " + cls, st);
+      // a subscription account's windows each, with when they reset, as
+      // the Usage page read them (#1833): the figure is the one window
+      // routing went by, the others on hover and on the Usage page. Live
+      // only: a kept day's requests were weighed by readings long gone.
+      const ws = day ? [] : [...winsOf(w).map((text) => ({ text })), ...remoteWinsOf(w)];
+      const figure = !!st && (resting || w.known || w.unlisted || w.noURL);
       if (resting && restTip(a.rest)) stEl.title = restTip(a.rest);
+      else if (figure && (ws.length || asOf)) stEl.title = [...ws.map((x) => x.text), asOf].filter(Boolean).join("\n");
       row.append(name, stEl);
       if (parts.length) {
         const r0 = parts[0][1].rest;
@@ -4372,25 +4532,21 @@ function routingPage(part) {
         if (restTip(r0)) part.title = restTip(r0);
         row.append(part);
       }
-      // a subscription account's windows each, with when they reset, as
-      // the Usage page read them (#1833): the figure above is the one
-      // window routing went by. Live only: a kept day's requests were
-      // weighed by readings long gone.
-      const ws = day ? [] : [...winsOf(w).map((text) => ({ text })), ...remoteWinsOf(w)];
-      if (ws.length) {
+      // with no figure of its own (a remote's row, an account not read
+      // yet), its windows are its one line of what is left, the rest of
+      // the line on hover
+      if (ws.length && !figure) {
         const line = el("div", "wins");
         line.append(...ws.map((x) => { const e = el("span", "", x.text); if (x.title) e.title = x.title; return e; }));
+        if (ws.length > 1) line.title = ws.map((x) => x.text).join("\n");
         row.append(line);
       }
       row.append(tally);
-      // the models it answered, on a line of their own, not wrapped in
-      // among the numbers; a provider's one model is already its name
+      // the models it answered on hover, with its id: a card says its name,
+      // what is left and how it fares (ferock4669, iyou00 on Discord); a
+      // provider's one model is already its name
       const mdls = [...a.models].filter((m) => !(w.kind === "provider" && m === w.model));
-      if (mdls.length) {
-        const ms = el("div", "mdls");
-        ms.append(...mdls.map((m) => el("code", "mdl", m)));
-        row.append(ms);
-      }
+      const remoteBad = ws.some((x) => x.title);
       const lifts = resting ? (a.rest.key ? [a.rest] : []) : parts.map(([, x]) => x.rest).filter((x) => x.key);
       if (lifts.length) {
         // any rest can be lifted by hand (#1869): a quota, a backoff, a
@@ -4426,10 +4582,46 @@ function routingPage(part) {
         bar.append(bi);
         row.append(bar);
       }
-      row.title = w.id;
-      put(row);
+      // one cell each, alike (danzi002 on Discord: "显示的好乱"): its
+      // name and a dot for how it is, then one line, what is left or when
+      // it is back, in a quiet colour. Red is for what the reader has to
+      // do: sign in again, a vendor's restriction or verification, a key
+      // failing with no answer. How it fares is that line where it has no
+      // other, and on hover, unless it is the reader's to fix.
+      const act = signIn || (!a.ok && fails.length > 0) || (resting && (a.rest.why === "restricted" || a.rest.why === "verify"));
+      const said = !!st || (ws.length > 0 && !figure);
+      row.classList.toggle("act", act);
+      row.classList.toggle("rest", !act && !!resting);
+      row.classList.toggle("on", !act && inUse.get(w.provider) === a);
+      row.classList.toggle("said", said && !act);
+      name.prepend(el("i", "dot"));
+      row.title = w.id + (mdls.length ? "\n" + mdls.join(", ") : "") + (said && !act ? "\n" + [...tally.children].map((e) => e.textContent).join(" · ") : "");
+      put(row, false, opened || signIn || resting || parts.length > 0 || remoteBad || (!a.ok && Object.keys(a.fails).length > 0));
     }
-    patch(acts, out);
+    // a long list shows its first ACTS_SHOWN rows and every one kept in
+    // sight, with its provider's heading; the rest behind Show N more.
+    // A few more alone aren't folded: the button would take their room
+    const hide = new Set(), seen = new Set();
+    let shown = 0, hidden = 0;
+    for (const b of out) {
+      const m = meta.get(b);
+      if (m.keep) seen.add(m.prov);
+      else if (shown < ACTS_SHOWN) { shown += m.n; seen.add(m.prov); } else hide.add(b);
+    }
+    // a provider's heading, in one block with its first row, goes with
+    // the rows of it shown
+    for (const b of out) if (hide.has(b) && seen.has(meta.get(b).prov) && b.querySelector(":scope > .rt-prov")) hide.delete(b);
+    for (const b of hide) hidden += meta.get(b).n;
+    if (hidden <= 2) hide.clear();
+    // written only when changed: a redraw with nothing new writes nothing
+    const unhide = (e, h) => { if (e.hidden !== h) e.hidden = h; };
+    unhide(actMore, !hide.size);
+    setText(actMore, actsAll ? t("Show fewer") : t("Show {n} more", { n: hidden }));
+    setAttr(actMore, "aria-expanded", String(actsAll));
+    setText(actUsage, t("View usage"));
+    unhide(actUsage, !list.length);
+    unhide(actFoot, actMore.hidden && actUsage.hidden);
+    patch(acts, actsAll ? out : out.filter((b) => !hide.has(b)));
   }
 
   // signInAgain signs the account of seat w in again, in its provider's
@@ -4483,13 +4675,11 @@ function routingPage(part) {
       el("span", "ok", t("answered {n}", { n: sum((a) => a.ok) })),
       ...(bad.length ? [el("span", "bad", bad.join(", "))] : []),
       ...(last ? [el("span", "", t("last answered {time}", { time: clock(last) }))] : []));
+    // the models they answered are each one's, opened. A cell like each
+    // account's: its name, then how many are available and resting; how
+    // they fared together is each one's, on hover
+    row.classList.toggle("said", true);
     const kids = [name, el("div", "st" + (resting === ks.length ? " rest" : ""), st.join(" · ")), tally];
-    const mdls = [...new Set(ks.flatMap((a) => [...a.models]))];
-    if (mdls.length) {
-      const ms = el("div", "mdls");
-      ms.append(...mdls.map((m) => el("code", "mdl", m)));
-      kids.push(ms);
-    }
     // drawn again only when what it says changes
     if (kids.length !== row.children.length || kids.some((k, i) => !k.isEqualNode(row.children[i]))) row.replaceChildren(...kids);
     return row;
@@ -4998,7 +5188,7 @@ function routingPage(part) {
   let second = 0;
   function countdown() {
     if (!shown()) { clearInterval(second); second = 0; return; }
-    second ||= setInterval(() => { if (!shown()) return countdown(); if (!pinned && loaded && cur) sync(); render(); renderActs(listed()); groupsReadAgain(); }, 1000);
+    second ||= setInterval(() => { if (!shown()) return countdown(); if (!pinned && loaded && cur) sync(); render(); renderActs(listed()); groupsReadAgain(); livePaint(); }, 1000);
   }
   countdown();
 
@@ -5243,7 +5433,7 @@ function routingPage(part) {
   // a group may also be routed by hand: every request to the member the
   // user picks on its card (provider.Manual, #317) — a provider's keys can't
   // and by its members' weights, as a provider's keys are (#1910)
-  const GROUP_ROUTE_OPTS = [...ROUTE_OPTS, ["cheap", "Cheapest first"], ["weight", "By weight"], ["manual", "Manual"]];
+  const GROUP_ROUTE_OPTS = [...ROUTE_OPTS, ["cheap", "Cheapest first"], ["expiring", "Free quota by expiry"], ["weight", "By weight"], ["manual", "Manual"]];
   const AFF_OPTS = [["", "Auto"], ["session", "Session"], ["turn", "Within a turn"], ["off", "Off"], ["strict", "Strict"]];
   // what one rate limited with quota left does then (provider.Sink), as in
   // a provider's editor (app.js SINKS)
@@ -5288,6 +5478,7 @@ function routingPage(part) {
     free: "Free first: the members whose model its vendor serves at no cost to the subscription's allowance or credits go first, then the rest — each whole, over its own accounts or keys as its provider routes them. The free ones are tried before any that spends, so nothing that costs nothing is left unused.",
     fast: "Speed first: the member that answered fastest lately goes first, by its time to the first token and how fast it writes, each of its accounts or keys weighed on its own; those within a tenth keep their listed order, and one not measured lately gets one request in five, so it is measured again.",
     cheap: "Cheapest first: the member whose model costs least now goes first, by its price a million tokens in and out at this hour — so a model billed double in its vendor's peak hours, as DeepSeek's own API and Ollama Cloud's DeepSeek models are, goes behind a provider charging less then, and ahead of it off-peak. Those that cost the same keep their listed order; one with no known price goes last.",
+    expiring: "Free quota by expiry: the accounts on a free plan, or whose model costs nothing there, go first, the one whose free quota is lost soonest first — at its next reset, or when its credits expire if sooner; once it is used up, the next. A paid one takes requests only when no free one has quota left, the paid as Smart orders them.",
     manual: "Manual: every request goes to the model you pick on the group's card, over its own accounts or keys; the others, and the rules, wait until you pick another — none takes over when it fails.",
   };
   // a group in the group, and a provider set to route other than Smart, is

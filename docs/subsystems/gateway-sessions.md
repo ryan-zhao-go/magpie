@@ -203,6 +203,11 @@ capabilities to a gateway row. Verification: `TestDesktopSessionTitles`,
 `TestDesktopSessionTitleInStats`, `TestDesktopTitlesReadOncePerList`,
 `TestDesktopSessionTitlesOnPages`.
 
+A ZCode request names its session without the `sess_` prefix ZCode's
+database gives it, so `Titles` looks a `zcode:` key up under both and
+answers under the id asked for (#5195). Verification:
+`TestZCodeTitlesByRequestID`.
+
 Routing's stage names the session an account is serving (connor_yang on
 Discord): a row answering, or that answered, the request shown adds that
 request's session title after its status, on one line cut short with the
@@ -221,6 +226,22 @@ changes it. A session with no title says nothing more, and
 neither does a Codex request whose parent was only matched by its prompt
 (`parentMatched`), since that match is a guess. Verification:
 `routing-session-title.test.cjs`.
+
+A By session head reads as its title (flandern1211_58540 on Discord: a
+folder and an id told nothing): the agent, then the session's title on one
+line (whitespace folded), then its folder in a quieter `.dir`; with no title
+the folder takes its place, and with neither the id. The tooltip keeps the
+title, the folder and the id. Where `sessions.Titles` and Codex's name index
+find nothing, the same endpoint falls back to the first prompt the gateway
+recorded for that session (`sessions.GatewayTitler`, the title its list
+shows), looked up under the agent the page names and the one the gateway
+records it under (`usage.AgentOf`): `withGatewayTitles` and
+`codexReadableTitles` in [`trace.go`](../../internal/gui/trace.go). Codex
+ids the index doesn't name go to `sessions.Titles` as `codex:` keys first,
+so a rollout's own first prompt names it. Nothing is read that the page
+couldn't already show on the Sessions page, and nothing leaves the local
+GUI. Verification: `TestSessionTitlesFallBackToFirstPrompt`,
+`routing-session-folder.test.cjs`.
 
 A gateway projection can be deleted (lc on Discord). `sessions.DeleteGateway`
 moves its recorded text folders (`gateway-conversations/<date>/<identity hash>`)
@@ -313,6 +334,34 @@ choice from the CLI (`sessionReadsTo`); while it is not asked,
 `magpie sessions` says so on stderr and the TUI's empty Sessions page
 says how (`sessNothing`). Tests: `TestSessionsRead`,
 `TestSessionsNotAskedSaysHow`.
+
+In gateway mode (`magpie web`'s page, [`gatewaymode.go`](../../internal/gui/gatewaymode.go))
+no agent's own session files are read, whatever `SessionReads` says
+(paultian on Discord: a server put in gateway mode with agents installed
+listed its own sessions beside those other computers sent). The gui sets
+`sessions.OwnOff` to `ownSessionsOff`, and `currentReads` answers "none"
+while it holds, so `Reads`, `allowed` and every route above (the list,
+`one`, `transcript`, `markdown`, `export`, stats, the overview, search,
+`manage`, delete, carry, the Codex provider move, and Usage's agent-file
+calls) see no local session; `Found` and `Dirs` are empty, the
+trash lists and restores only what the gateway kept, and moving Claude
+Code's project folder is refused (`ErrNotRead`). Gateway-recorded
+sessions (the ledger's projection and the recorded conversations) are not
+behind this gate and still show, a local agent's that went through this
+gateway among them. `ownSessionsOff` asks `settings.Shared()` and an
+agents look kept for 30 s, as it is asked on every read, and when its
+answer turns it resets the sessions' caches and the stats
+(`forgetOwnSessions`), as `POST /api/settings/gateway-mode` does at once.
+`/api/sessions/reads` says `gateway: true` then: the Sessions page asks
+nothing, its empty state says the sessions shown are those of other
+computers' agents that use this gateway, and Settings › Privacy leaves
+*Agents' session history* out. A session is listed only when its
+requests name one in a header (`sessionOf`: `X-Magpie-Session`, or the
+agent's own, `sessionHeaders`), under the agent its User-Agent names
+(`usage.AgentOf`, magpie's agents and plugins' agents; another client by
+its product name).
+The app's windows are never in gateway mode. Tests:
+`TestGatewayModeListsNoOwnSessions`, `gateway-mode-sessions.test.cjs`.
 
 What is read either way: the gateway's own usage ledger, its
 projections and the conversations it recorded (they are magpie's own),

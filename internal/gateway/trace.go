@@ -151,6 +151,12 @@ type Route struct {
 	// is unknown (maskingMs)
 	Phase   string `json:"phase,omitempty"`
 	Masking int64  `json:"masking,omitempty"`
+	// Bytes, ContentAt and EstTok: the reply as it reaches the agent
+	// (live.go), the bytes it has had, the epoch ms content last came, and
+	// the output tokens estimated from it, 0 while its pair has no rate
+	Bytes     int64 `json:"bytes,omitempty"`
+	ContentAt int64 `json:"contentAt,omitempty"`
+	EstTok    int   `json:"estTok,omitempty"`
 	// Held: the file name, in HeldDir, of the report saved of a request
 	// magpie held too long before routing it and stopped (giveUp)
 	Held string `json:"held,omitempty"`
@@ -299,6 +305,10 @@ type Weighed struct {
 	Known    bool    `json:"known,omitempty"`  // the vendor said what the account has left
 	Learns   bool    `json:"learns,omitempty"` // not known, but its answer will tell
 	Used     float64 `json:"used"`             // share of the allowance counting the model, used
+	// WeekLow: Used is at 90% or more for its week alone, so Smart and Use
+	// before expiry keep it with those that have room rather than for
+	// last (routes.Seat.WeekLow); false under another routing
+	WeekLow bool `json:"weekLow,omitempty"`
 	// Amount of Limit in Unit: the count that share is of, when the
 	// vendor counts it so (WorkBuddy's credits, #659)
 	Amount float64 `json:"amount,omitempty"`
@@ -312,6 +322,7 @@ type Weighed struct {
 	Due      *time.Time        `json:"due,omitempty"`      // when the allowance window used for pace resets
 	Tokens   float64           `json:"tokens,omitempty"`   // least used: tokens it served lately
 	Free     bool              `json:"free,omitempty"`     // its model costs nothing there (free first)
+	Expires  *time.Time        `json:"expires,omitempty"`  // free quota by expiry: when a free one's quota is first lost
 	LateTTFT float64           `json:"lateTtft,omitempty"` // speed first: its ms to the first token lately, 0 if not measured (speed.go)
 	LateTPS  float64           `json:"lateTps,omitempty"`  // speed first: its tokens a second lately, 0 if not told
 	Price    *SeatPrice        `json:"price,omitempty"`    // cheapest first: what its model costs on it now, nil if not known
@@ -458,6 +469,10 @@ type Try struct {
 	Error      string `json:"error,omitempty"`
 	Rest       *Rest  `json:"rest,omitempty"`  // how long it now sits out; none when it was the last to try
 	Again      int64  `json:"again,omitempty"` // ms waited before it was tried again, the last one left
+	// Kept: Again was waited though others were left, because the
+	// conversation is kept on this one for what its vendor cached of it,
+	// so it is asked once more before it moves (keptAgain, jiabubu)
+	Kept bool `json:"kept,omitempty"`
 	// Replan: every member had failed in a way that passes, so after
 	// Again the Replan of them that may answer by then were asked again,
 	// in turn, within the group's Patience (seconds) for the request
@@ -473,6 +488,10 @@ type Try struct {
 	// allowance's (Discord, waroy). Whether a try went on is the next
 	// try in Tries, which is appended only as it is asked (#2281)
 	Earlier bool `json:"earlier,omitempty"`
+	// errType: the kind of error the failure's body named (Usage.ErrType),
+	// kept for the one told in place of a later try's (Earlier), so the
+	// row's kind is that failure's and not the later try's
+	errType string
 	// Queued: ms it waited for one of its key's or account's slots, the
 	// provider's MaxConcurrency out already (concurrency.go)
 	Queued int64 `json:"queued,omitempty"`
@@ -541,6 +560,7 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 	}
 	if l, ok := wg.lefts[c.allowanceKey()]; ok {
 		w.Known, w.Used, w.Renews, w.Pace, w.Credits, w.CreditsFirst = true, l.used, l.renews, l.pace, l.credits, l.first
+		w.WeekLow = l.weekLow && keepsWeek(p.Routing)
 		if !l.fullest.IsZero() {
 			ur := l.fullest
 			w.UsedRenews = &ur
@@ -573,6 +593,9 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 	}
 	if wg.free != nil {
 		w.Free = wg.free[c.rest]
+	}
+	if t, ok := wg.expires[c.rest]; ok {
+		w.Expires = &t
 	}
 	if sp, ok := wg.speed[c.restID()]; ok {
 		w.LateTTFT, w.LateTPS = math.Round(sp[0]), math.Round(sp[1]*10)/10
@@ -828,6 +851,11 @@ func (t *trace) update(r *Route, f func(r *Route)) {
 			t.totals.Errors++
 		}
 		t.turns.end(r, turnFinal(r), time.Now())
+		// read: the scan's context is its request's, which keeps the
+		// request on it (inflight's unrouted watch) and so its body; a
+		// socket turn's is the whole conversation, in memory, and 60
+		// routes are kept
+		r.tools = nil
 		if keepsRoutes() {
 			c := *r
 			c.Order = append([]Weighed{}, r.Order...) // [] for none: the GUI reads it as a list
@@ -842,6 +870,22 @@ func (t *trace) update(r *Route, f func(r *Route)) {
 	if after := activityOf(r); before != after {
 		t.noteActivity(r, activityChange(before, after))
 	}
+}
+
+// liveBytes writes a reply's running totals on its route (live.go): the
+// bytes the agent has had, when content last came, and its estimated
+// output tokens. Each write wakes the pages waiting, which gather a
+// moment before they read (traceGather), so a stream's many writes reach
+// a page a few times a second, and the last before a pause is not lost.
+func (t *trace) liveBytes(rt *Route, bytes, contentAt int64, est int) {
+	if rt == nil {
+		return
+	}
+	t.mu.Lock()
+	rt.Bytes, rt.ContentAt, rt.EstTok = bytes, contentAt, est
+	t.changed()
+	rt.Seq = t.seq
+	t.mu.Unlock()
 }
 
 // gatewayTrace tells this gateway's routing to another magpie on the same

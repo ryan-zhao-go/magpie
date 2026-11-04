@@ -539,12 +539,17 @@ func wordsOf(body []byte) []byte { return catalog.Words(body) }
 // 200 it came with, OpenAI's "Rate limit reached for gpt-6.1-sol … on
 // tokens per min (TPM) … Please try again in 6ms." held usedUpWords'
 // "limit reached" and rested the account as out of quota (monater on
-// Discord), where its 429 is a minute's rate limit. Words streamStatus
-// doesn't know (its 502) keep the 200, and read as before; any other
-// status is the reply's own.
+// Discord), where its 429 is a minute's rate limit. The status the error
+// object names for itself comes first (#4855: a plugin's in-stream frame
+// is the only place its runtime can say one); words streamStatus doesn't
+// know (its 502) keep the 200, and read as before; any other status is
+// the reply's own.
 func carriedStatus(status int, body []byte) int {
 	if status < 200 || status >= 400 {
 		return status
+	}
+	if said := namedStatus(body); said != 0 {
+		return said
 	}
 	if said := streamStatus(string(wordsOf(body))); said != http.StatusBadGateway {
 		return said
@@ -1296,8 +1301,9 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 // translation without putting it in the response sent to the client.
 func (s *Server) restAfterMarked(c candidate, status int, header http.Header, body []byte, sharedPool bool) Rest {
 	// an error carried under a 200 rests as its own status would, and
-	// says that status where the rest is shown
-	status = carriedStatus(status, body)
+	// says that status where the rest is shown — first among equals the
+	// one its stream's error frame named outright (#4855)
+	status = failedNamed(header, carriedStatus(status, body))
 	now := time.Now()
 	d := fallbackCooldown
 	why := failureOf(c, status, body)
@@ -1984,6 +1990,23 @@ const refusedHeader = "X-Magpie-Refused"
 // leaves it out; one written straight to the agent carries it, harmlessly.
 const resetsHeader = "X-Magpie-Resets-At"
 
+// namedStatusHeader carries, from a relayed stream's error frame to the
+// routing loop and restAfter, the status the frame named for itself
+// (#4855): a plugin that already sent its 200 can only say what went
+// wrong in the frame, and the status it names there — not the one its
+// message's words guess — is what the failure rests as. The client never
+// sees it.
+const namedStatusHeader = "X-Magpie-Named-Status"
+
+// failedNamed is status, or the status a relayed stream's error frame named
+// for itself (#4855, namedStatusHeader), which the failure reads as.
+func failedNamed(h http.Header, status int) int {
+	if n, err := strconv.Atoi(h.Get(namedStatusHeader)); err == nil && n >= 400 && n < 600 {
+		return n
+	}
+	return status
+}
+
 // resetsNoted is how long until the time keepRetry noted, if it did.
 func resetsNoted(h http.Header, now time.Time) time.Duration {
 	n, err := strconv.ParseInt(h.Get(resetsHeader), 10, 64)
@@ -2051,6 +2074,11 @@ type weighing struct {
 	// only when the routing weighs by it (routes.Strategy.ByFree)
 	free map[string]bool
 
+	// expires is when each free seat's quota is first lost (routes.Expires),
+	// by rest key: filled only when the routing weighs by plan
+	// (routes.Strategy.ByPlan, Free quota by expiry)
+	expires map[string]time.Time
+
 	// speed is each seat's speed lately, by restID (a group's heads can
 	// be two models on one key): filled only when the routing weighs by
 	// it (routes.Strategy.BySpeed)
@@ -2082,8 +2110,11 @@ func (c candidate) allowanceKey() allowanceKey {
 }
 
 type left struct {
-	used   float64
-	renews []time.Time
+	used float64
+	// weekLow: used is at lowShare or more for its budget windows alone,
+	// no rate cap of it near full (Allowance.CapUsed, routes.Seat.WeekLow)
+	weekLow bool
+	renews  []time.Time
 	// fullest: when the window used is the share of renews
 	// (Allowance.Fullest), zero when not known
 	fullest time.Time
@@ -2142,6 +2173,14 @@ func routingOf(routing string) string {
 	return provider.Ordered
 }
 
+// keepsWeek: routed so, a pool keeps an account running low on its week
+// alone with those that have room (routes.Seat.WeekLow): Smart and Use
+// before expiry, which spend what a reset would lose.
+func keepsWeek(routing string) bool {
+	r := routingOf(routing)
+	return r == "" || r == provider.Pace
+}
+
 // goesRound: routed so, a pool goes round by itself (in turn, by weight),
 // so its first is marked as the turn's and the rate limited aren't sent
 // back.
@@ -2186,6 +2225,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			l := left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), lapse: a.Lapse(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
 				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs), credits: spendsCredits(c.p, a)} // one not known counts as unused
 			l.dueExpiry = !l.dueRestart && !l.lapse.IsZero() && due.Equal(l.lapse)
+			l.weekLow = u >= lowShare && u < usedShare && a.CapUsed(c.model, now) < lowShare
 			l.first = l.credits && provider.CodexCreditsFirst(c.p.Account.User)
 			if b, bu, has := a.Left(c.model); has {
 				// a wallet's figure is weighed only against the same
@@ -2213,7 +2253,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pace = provider.FreshPace
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
-			Used: l.used, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
+			Used: l.used, WeekLow: l.weekLow, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
 			Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c)}
 	}
 	routed.Unlock()
@@ -2230,6 +2270,26 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		for i, c := range cs {
 			free := c.p.FreeModel(c.model)
 			seats[i].Free, wg.free[c.rest] = free, free
+		}
+	}
+	if st.ByPlan {
+		// an account's plan as its vendor or plugin named it
+		// (Account.Plan): a free one is spent before a paid one, and the
+		// trace tells it free with when its quota is first lost
+		if wg.free == nil {
+			wg.free = map[string]bool{}
+		}
+		wg.expires = map[string]time.Time{}
+		for i, c := range cs {
+			seats[i].FreePlan = c.p.Account != nil && provider.FreePlan(c.p.Account.Plan)
+			if seats[i].FreePlan {
+				wg.free[c.rest] = true
+			}
+			if wg.free[c.rest] {
+				if t := routes.Expires(seats[i]); !t.IsZero() {
+					wg.expires[c.rest] = t
+				}
+			}
 		}
 	}
 	if st.BySpeed {

@@ -735,6 +735,19 @@ func codexIn(at place) *Agent {
 		dropList()
 		return nil
 	}
+	// profileNamed are the provider tables a profile of config.toml names:
+	// the user's to pick, each left as it is
+	profileNamed := func(names []string) map[string]bool {
+		named := map[string]bool{}
+		for _, n := range names {
+			if strings.HasPrefix(n, "profiles.") {
+				if t, _ := edit.GetTOMLTable(path, n); t["model_provider"] != "" {
+					named[t["model_provider"]] = true
+				}
+			}
+		}
+		return named
+	}
 	// bringBack moves the threads started while magpie was Codex's
 	// provider (model_provider "magpie") onto the provider Codex is on now,
 	// once it is off magpie: Codex lists only the threads of its current
@@ -785,11 +798,25 @@ func codexIn(at place) *Agent {
 	// place (RelabelCodexThreads): those Codex has packed, a week after
 	// their last turn, stay on OpenAI, as a rewrite of every one would
 	// copy the whole history. bringBack moves them back as Codex leaves
-	// magpie. Only OpenAI's, and only when Codex was on OpenAI before
-	// magpie: threads of a provider of the user's (CC Switch's) stay, and
-	// so do OpenAI's when Codex was on another provider, whose threads
-	// bringBack would hand them to. None while a profile is chosen, whose
-	// provider is the one Codex lists, and none from a distro's Codex.
+	// magpie. Only the threads of the provider Codex was on before magpie
+	// (stash codex.provider, OpenAI when none was set): those of any other
+	// provider stay, and so do OpenAI's when Codex was on another one,
+	// whose threads bringBack would hand them to. None while a profile is
+	// chosen, whose provider is the one Codex lists, none of a provider a
+	// profile names, which the user picks to go on with them there, and
+	// none from a distro's Codex.
+	//
+	// The provider Codex was on before can be one of the user's own, a
+	// relay's table or CC Switch's "custom". Its threads stayed on it at
+	// first (#887 asked for a Move by hand: Codex 0.159 only left them out
+	// of its list), but Codex 0.166 lists them in the app and refuses to
+	// open one on magpie ("This chat uses custom, but your current
+	// provider is magpie", hxy920830 on X: "原来的会话可以看到，但是加载不
+	// 出来模型了"), so they move as OpenAI's do. Disconnected, or with CC
+	// Switch back on that provider, bringBack gives them back to it. An id
+	// of magpie's length moves in place; any other is rewritten with a
+	// copy kept, the last 30 days of it as the packed ones below; older
+	// ones from Sessions.
 	//
 	// Codex 0.166 resumes a thread only on the provider it is on now (the
 	// app: "This chat uses openai, but your current provider is magpie.
@@ -804,22 +831,39 @@ func codexIn(at place) *Agent {
 		if at.spell != nil || !asProvider() || sessions.CodexProviderIn(dir) != magpieID {
 			return
 		}
-		if p := stashShared()[at.key("codex.provider")]; p != "" && p != "openai" {
+		from := stashShared()[at.key("codex.provider")]
+		if from == "" {
+			from = "openai"
+		}
+		// CC Switch's official route is bringOfficial's
+		if from == magpieID || from == ccSwitchOfficial {
 			return
 		}
-		moved, err := sessions.RelabelCodexThreads(dir, "openai", magpieID)
-		if len(moved) > 0 {
-			log.Printf("codex: %d thread(s) started on OpenAI moved to magpie, where Codex lists them now", len(moved))
+		if from != "openai" {
+			names, _ := edit.TOMLTables(path)
+			if profileNamed(names)[from] {
+				return
+			}
 		}
-		if err != nil {
-			log.Println("codex: moving OpenAI's threads to magpie:", err)
+		if len(from) == len(magpieID) {
+			moved, err := sessions.RelabelCodexThreads(dir, from, magpieID)
+			if len(moved) > 0 {
+				log.Printf("codex: %d thread(s) started on %s moved to magpie, where Codex lists them now", len(moved), from)
+			}
+			if err != nil {
+				log.Printf("codex: moving %s's threads to magpie: %v", from, err)
+			}
 		}
-		packed, err := sessions.MovePackedCodexThreads(dir, "openai", magpieID, time.Now().Add(-packedSince), packedBudget)
+		move := sessions.MovePackedCodexThreads
+		if len(from) != len(magpieID) {
+			move = sessions.MoveRecentCodexThreads
+		}
+		packed, err := move(dir, from, magpieID, time.Now().Add(-packedSince), packedBudget)
 		if len(packed) > 0 {
-			log.Printf("codex: %d packed thread(s) started on OpenAI moved to magpie, where Codex resumes them now", len(packed))
+			log.Printf("codex: %d thread(s) started on %s rewritten onto magpie, where Codex resumes them now", len(packed), from)
 		}
 		if err != nil {
-			log.Println("codex: moving OpenAI's packed threads to magpie:", err)
+			log.Printf("codex: moving %s's threads to magpie: %v", from, err)
 		}
 	}
 	// mirrorsTaken are the mirrors takeMirrors pointed at magpie (#1796)
@@ -842,19 +886,6 @@ func codexIn(at place) *Agent {
 		}
 		u := t["base_url"]
 		return u == "" || (u == at.codexURL() && (stashShared()[at.key("codex.mirror_failover")] == p || slices.Contains(mirrorsTaken(), p)))
-	}
-	// profileNamed are the provider tables a profile of config.toml names:
-	// the user's to pick, each left as it is
-	profileNamed := func(names []string) map[string]bool {
-		named := map[string]bool{}
-		for _, n := range names {
-			if strings.HasPrefix(n, "profiles.") {
-				if t, _ := edit.GetTOMLTable(path, n); t["model_provider"] != "" {
-					named[t["model_provider"]] = true
-				}
-			}
-		}
-		return named
 	}
 	// bringOfficial moves the threads of CC Switch's "cc-switch-official"
 	// to the provider Codex is on with magpie (OpenAI beside the sign-in,
@@ -885,6 +916,112 @@ func codexIn(at place) *Agent {
 		}
 		if err != nil {
 			log.Println("codex: moving CC Switch's official threads:", err)
+		}
+	}
+	// brought are the threads bringBeside moved onto OpenAI, and the
+	// provider they were on
+	type besideMove struct {
+		From string   `json:"from"`
+		IDs  []string `json:"ids"`
+	}
+	brought := func() besideMove {
+		var b besideMove
+		json.Unmarshal([]byte(stashShared()[at.key("codex.brought")]), &b)
+		return b
+	}
+	// bringBeside is bringOver for Codex on OpenAI beside its sign-in,
+	// routed through magpie by the base URL, with a provider of the user's
+	// in the stash that config.toml no longer names: before #4347 the
+	// beside wiring took the user's model_provider (CC Switch's "custom")
+	// down, and Codex 0.166 refused every thread started on it ("This
+	// chat uses custom, but your current provider is openai. Switch to
+	// custom to continue", yikelizi9438 on Discord, the Codex app on
+	// Windows). Those threads move to OpenAI, where Codex resumes them
+	// through magpie, as bringOver moves them onto magpie: in place when
+	// the id is OpenAI's length, the last 30 days of them rewritten with a
+	// copy kept otherwise. Each one moved is kept (codex.brought) for the
+	// Disconnect, which puts the provider back, to give them back to it
+	// (giveBeside); OpenAI's own threads stay. None while a profile is
+	// chosen or names that provider, and none from a distro's Codex.
+	bringBeside := func() {
+		if at.spell != nil || asProvider() || !viaBase() || get("model_provider") != "" || sessions.CodexProviderIn(dir) != "openai" {
+			return
+		}
+		from := stashShared()[at.key("codex.provider")]
+		if from == "" || from == "openai" || from == magpieID || from == ccSwitchOfficial || isCCSwitchMirror(from) {
+			return
+		}
+		names, _ := edit.TOMLTables(path)
+		if profileNamed(names)[from] {
+			return
+		}
+		var ids []string
+		if len(from) == len("openai") {
+			moved, err := sessions.RelabelCodexThreads(dir, from, "openai")
+			ids = append(ids, moved...)
+			if err != nil {
+				log.Printf("codex: moving %s's threads to OpenAI: %v", from, err)
+			}
+		}
+		move := sessions.MovePackedCodexThreads
+		if len(from) != len("openai") {
+			move = sessions.MoveRecentCodexThreads
+		}
+		packed, err := move(dir, from, "openai", time.Now().Add(-packedSince), packedBudget)
+		for _, m := range packed {
+			ids = append(ids, m.ID)
+		}
+		if err != nil {
+			log.Printf("codex: moving %s's threads to OpenAI: %v", from, err)
+		}
+		if len(ids) == 0 {
+			return
+		}
+		log.Printf("codex: %d thread(s) started on %s moved to OpenAI, where Codex resumes them beside its sign-in", len(ids), from)
+		b := brought()
+		if b.From != from {
+			b = besideMove{From: from}
+		}
+		for _, id := range ids {
+			if !slices.Contains(b.IDs, id) {
+				b.IDs = append(b.IDs, id)
+			}
+		}
+		out, _ := json.Marshal(b)
+		stash(map[string]string{at.key("codex.brought"): string(out)})
+	}
+	// giveBeside gives the threads bringBeside moved back to the provider
+	// they were on, once Codex is on it again (the Disconnect put it
+	// back), or moves them on to to (magpie made Codex's provider, whose
+	// threads bringBack gives that provider at the Disconnect). Only those
+	// still on OpenAI move; either way the record goes.
+	giveBeside := func(to string) {
+		b := brought()
+		if b.From == "" || at.spell != nil {
+			forget(at.key("codex.brought"))
+			return
+		}
+		if to == "" {
+			if to = sessions.CodexProviderIn(dir); to != b.From {
+				// Codex is on another provider now: they stay on OpenAI
+				forget(at.key("codex.brought"))
+				return
+			}
+		}
+		moved, err := sessions.MoveCodexThreadIDs(dir, "openai", to, b.IDs)
+		if len(moved) > 0 {
+			log.Printf("codex: %d thread(s) started on %s moved from OpenAI to %s", len(moved), b.From, to)
+		}
+		if err != nil {
+			log.Printf("codex: moving %s's threads to %s: %v", b.From, to, err)
+		}
+		forget(at.key("codex.brought"))
+	}
+	// followBeside: magpie made Codex's provider since, the threads
+	// bringBeside moved onto OpenAI go on to magpie, as bringOver's do
+	followBeside := func() {
+		if asProvider() && brought().From != "" && sessions.CodexProviderIn(dir) == magpieID {
+			giveBeside(magpieID)
 		}
 	}
 	// The provider tables in Codex's config a reopened thread goes to,
@@ -1402,7 +1539,7 @@ func codexIn(at place) *Agent {
 				return err
 			}
 			dropList()
-			forget(at.key("codex.model"), at.key("codex.effort"), at.key("codex.effort_set"), at.key("codex.provider"), at.key("codex.catalog"), at.key("codex.out"), at.key("codex.joined"), at.key("codex.beside"))
+			forget(at.key("codex.model"), at.key("codex.effort"), at.key("codex.effort_set"), at.key("codex.provider"), at.key("codex.catalog"), at.key("codex.out"), at.key("codex.joined"), at.key("codex.beside"), at.key("codex.brought"))
 			return deskList()
 		}
 		// magpie API: magpie stays Codex's provider whichever model is the
@@ -1504,6 +1641,7 @@ func codexIn(at place) *Agent {
 			}
 			// the threads from before, where Codex lists them now
 			bringOver()
+			followBeside()
 			return settle()
 		}
 		// joined, a model of Codex's own is picked beside magpie's, as in
@@ -1581,6 +1719,8 @@ func codexIn(at place) *Agent {
 			}
 			// and are listed where Codex now is
 			bringBack()
+			// and those bringBeside moved onto OpenAI go back to theirs
+			giveBeside("")
 			return settle()
 		},
 		// signed in with ChatGPT, Codex reaches magpie by the base URL with
@@ -1655,6 +1795,8 @@ func codexIn(at place) *Agent {
 		Sync: func() error {
 			// after the sync, which may have put Codex back beside its
 			// sign-in or made magpie its provider, and whatever it failed at
+			defer followBeside()
+			defer bringBeside()
 			defer bringOfficial()
 			defer bringOver()
 			defer bringBack()

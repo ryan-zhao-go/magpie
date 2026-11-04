@@ -34,6 +34,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("steps.published.outputs.version", source)
         self.assertIn("steps.existing.outputs.version || steps.meta.outputs.version", source)
 
+    def test_gateway_gate_covers_thinking_handover_after_upstream_merge(self):
+        source = workflow.read_text()
+        block = source.split("- name: Test answer-timeout gateway behavior and races\n", 1)[1].split("\n      - ", 1)[0]
+        for name in (
+            "TestCompactionOverByteCapEveryTime",
+            "TestThinkingHeldFor",
+            "TestClaudeTrustedThinkingStreamsThroughGroup",
+            "TestClaudeTrustedThinkingErrorFailsOver",
+            "TestTrustedThinkingFailsOverOnEveryPath",
+        ):
+            self.assertIn(name, block)
+
     def test_merge_preserves_resolved_patch_history(self):
         source = workflow.read_text()
         self.assertIn('git merge --no-edit "$UPSTREAM_SHA"', source)

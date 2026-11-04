@@ -852,10 +852,12 @@ func leastHeld(scope, key string, cs []candidate, pl planned, ready bool) ([]can
 // readyForNew says whether order[i], behind order[0], is one routing would
 // put a new conversation on: not resting, nor a key for another protocol,
 // nor a fallback while the provider's own model leads, nor used past
-// lowShare unless it spends its credits first (Weighed.CreditsFirst).
+// lowShare unless it spends its credits first (Weighed.CreditsFirst) or
+// is that low on its week alone, which Smart and Use before expiry keep
+// with those that have room (Weighed.WeekLow).
 func readyForNew(order []Weighed, i int) bool {
 	w := order[i]
-	return w.Rest == nil && !w.Aside && !standsIn(order, i) && !(w.Known && w.Used >= lowShare && !w.CreditsFirst) && !lastBehind(order, i) && !busyBehind(order, i)
+	return w.Rest == nil && !w.Aside && !standsIn(order, i) && !(w.Known && w.Used >= lowShare && !w.CreditsFirst && !(w.WeekLow && w.Used < usedShare)) && !lastBehind(order, i) && !busyBehind(order, i)
 }
 
 // standsIn says whether order[i] is a provider's fallback while one of the
@@ -1376,4 +1378,25 @@ func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
 	q["input"], _ = json.Marshal(kept)
 	b, err := marshalJSON(q)
 	return b, err == nil
+}
+
+// keptAgain says whether c, having failed through hw, is asked once more
+// after a moment before the request moves on, and how long that moment is:
+// c is the key or account (and model) the conversation was kept on for
+// what its vendor cached of it (aff.Kept: Stays Auto with a warm cache,
+// Session, or within a turn), not asked again so already (asked), and the
+// failure is one that may be gone a moment later (busy: overloaded, a 5xx
+// that says nothing of quota, timed out) and not a rate limit, which rests
+// and moves as before. Moved at once, the next one is sent the whole
+// conversation uncached, and within a turn may refuse the reasoning the
+// first sealed; a moment's wait costs far less. Strict needs none of it:
+// its one is the last left, asked again as the last one is.
+func keptAgain(aff *Affinity, c candidate, hw *holdWriter, asked bool) (time.Duration, bool) {
+	if asked || aff == nil || !aff.Kept || aff.Why == "strict" || c.rest != aff.Last {
+		return 0, false
+	}
+	if !hw.failed() || hw.turnedAway || hw.refused || hw.code() == http.StatusTooManyRequests || !busy(hw.code(), hw.errBody()) {
+		return 0, false
+	}
+	return passing(hw.code(), hw.header, hw.errBody(), 0)
 }

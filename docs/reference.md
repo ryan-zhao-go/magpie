@@ -149,6 +149,7 @@ line; agents connected to magpie lose it when it quits.
 | OpenPencil   | `openpencil/settings.json` in the config folder: `~/Library/Application Support` (macOS), `$XDG_CONFIG_HOME` or `~/.config` (Linux), `%APPDATA%` (Windows) | provider (a `magpie` entry in its `builtin_agents`, magpie's models in its chat's model picker; the user's entries and settings kept; refused while OpenPencil runs, as it writes the file back when it quits) |
 | OpenBot      | `OpenBot/openbot-custom-providers-v1.json` in the app data folder: `~/Library/Application Support` (macOS), `%APPDATA%` (Windows), `$XDG_CONFIG_HOME` or `~/.config` (Linux) | provider (a keyless `magpie` endpoint, magpie's models in its model picker; the user's endpoints kept; OpenBot reads it at start, so restart it) |
 | NewMax       | `newmax.db` (SQLite, the row `app` of its `settings` table) in `$NEWMAX_USER_DATA_DIR`, else `~/.newmax` (every OS) | provider (a `magpie-gateway` entry in its `providers` and `providerOrder`, magpie's models in its model picker; the rest of the row kept byte for byte; refused while NewMax runs, as it writes its settings back whenever one changes) |
+| LiveAgent    | `config.json` (JSONC, K-brain's) in `$LIVEAGENT_HOME`, else `$K_BRAIN_HOME`, else the folder `~/.liveagent/data-dir.json` points to, else `~/.liveagent` (every OS) | provider (a `magpie` entry in its `providers`, Anthropic Messages at the gateway's root, magpie's models in its model picker; a default still K-brain's own demo model becomes magpie's first; refused while LiveAgent or its `k-brain` backend runs, as it writes its settings back whenever one changes) |
 | T3 Code      | `~/.t3/userdata/settings.json` (`$T3CODE_HOME/userdata`) | provider (a `magpie` provider instance on Claude Code, magpie's models as its custom models; a `magpie-codex` instance on Codex, whose `launchArgs` are Codex's own `-c` overrides to magpie and a `magpie-codex-models.json` catalog beside the settings. The harness is picked in T3's model picker) |
 | OpenHanako   | `~/.hanako/provider-catalog.json` + `agents/<id>/config.yaml` (`$HANA_HOME`; its local API while it runs) | model (the primary agent's; magpie's models as a provider) |
 | AtomCode     | `~/.atomcode/config.toml` (`$ATOMCODE_HOME`) | model, effort (a `magpie` provider account, one model table per catalog model as its own sign-in writes) |
@@ -1134,6 +1135,15 @@ OpenCode ignores:
   ASCII, so this is where a name like 华为云 HUAWEI goes. One line of at
   most 80 bytes; anything else is ignored. It is the package's own word:
   never shown as reviewed, and never used to find a plugin by name.
+  A repository tagged `magpie-plugin` shows it on its card under Discover
+  → Unofficial, on GitHub too, in place of the repository's name (npm's
+  copy of the package says it when the card installs from npm).
+- **What the plugin is**: `"magpie": { "summary": { "en": "…", "zh": "…" } }`
+  is its card's line under Discover → Unofficial, on GitHub, in the window's
+  language (zh-TW reads `zh`), else in English, else GitHub's description.
+  A sentence a language: one line of at most 300 bytes, a language code of
+  at most 12; anything else is ignored. A card that shows a name or a
+  summary of the package's own says "Its own words": nobody reviewed them.
 - **An API key's field**: a `type: "api"` method's `label` titles the key's
   field, as OpenCode's dialog does (one that only says "API key" reads
   "<provider> API key"), and its `placeholder` is the hint inside the field
@@ -1193,6 +1203,45 @@ magpie strips tags and cuts each page's text. A throw with a numeric
 treated as a built-in's 401/402/403/429 is; any other throw is a failure
 and the next search API is asked. It has the time a search API has
 (a quarter of a search's limit); `ctx.abort` fires then.
+
+A search API can use a sign-in instead of a key: `auth` names a provider
+this plugin's `auth` hook signs in to (one with models, or an auth hook
+with none). It is added with no key, and its row in Settings says whose
+sign-in it uses and how many of that provider's accounts are on. A search
+asks one account at a time: the accounts that are on (Providers' switches),
+in the order the provider's model requests take them, one resting from a
+search refusal last. For each,
+`ctx.getAuth()` returns a copy of that one account's sign-in, renewed first
+when it is due; the renewal counts within the search's time, and the plugin
+never reads `plugin-auth.json`. A token the hook saves with
+`client.auth.set({path: {id: "<provider>"}, body})` goes to that same
+account. A throw with `status` 429 (or 401, 402, 403)
+rests that account for search only, never for the provider's models, and
+the next account is asked. Not signed in, or no account on, is said in the
+row and in the request log, and the next search API is asked. A plugin with
+several providers adds one search entry per provider.
+
+```js
+export const SeekCo = async () => ({
+  auth: { provider: "seekco", methods: [/* … */], async loader(getAuth) { /* … */ } },
+  search: {
+    seek: {
+      name: "SeekCo",
+      auth: "seekco",              // the provider whose sign-in it uses; no key
+      async execute({ query, count }, ctx) {
+        const a = await ctx.getAuth() // { type: "oauth", access, refresh, expires, accountId, … }
+        const r = await fetch(`https://api.seek.example/search?q=${encodeURIComponent(query)}&n=${count}`,
+          { headers: { authorization: `Bearer ${a.access}` }, signal: ctx.abort })
+        if (!r.ok) throw Object.assign(new Error(await r.text()), { status: r.status })
+        return (await r.json()).results
+      },
+    },
+  },
+})
+```
+
+An `auth` naming a provider this plugin doesn't sign in to is ignored: the
+entry is an ordinary keyed one, and its `ctx` has no `getAuth`.
 
 #### Gateway middleware
 
@@ -2169,6 +2218,7 @@ It exposes:
 | `/api/version`, `/api/tags`, `/api/show` | the catalog as an Ollama server lists it, for a client that takes a custom endpoint only as Ollama (below) |
 | `/mcp/magpie/hub` | MCP (Streamable HTTP): every MCP server in the Library, as one server, for any app, while *Library → MCP → MCP router* is on |
 | `/mcp/magpie/hub/{agent}` | MCP (Streamable HTTP): the Library's MCP servers ticked for that agent, as one server, while *Library → MCP → MCP router* is on |
+| `/v1/magpie/native/{provider}/{path}` | a provider's own API, as it is (GET, POST, PUT, PATCH, DELETE; below) |
 
 With that switch on, each agent that takes an MCP server over HTTP is
 given one entry, `magpie`, in place of the Library's servers, and magpie
@@ -2182,6 +2232,27 @@ reaches magpie at, with its key. Turning the switch off gives every agent
 each server's own entry again. It is guarded as the gateway is: a local
 request, or one with a gateway key, and no other web page
 ([MCP router](subsystems/mcp-router.md)).
+
+`/v1/magpie/native/<provider>/<path>` reaches a provider's own API
+through magpie, for what the OpenAI shape doesn't carry. `<provider>` is
+the provider's id; `<path>` is joined to its host, not to its base URL,
+so `/v1/magpie/native/ark/api/v3/contents/generations/tasks` asks
+`https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks`.
+GET, POST, PUT, PATCH and DELETE are passed on with the query and body as
+sent, and the answer comes back as it came, a stream as it arrives.
+magpie signs it with the provider's key, the way that provider takes one;
+the caller's own `Authorization`, `x-api-key`, `x-goog-api-key`, cookies
+and `?key=` never go on. It serves a provider added with an API key (a
+vendor's or your own), not a subscription, a sign-in or a plugin's
+account. A path with a `.` or `..` segment (encoded too), a backslash, a
+leading or encoded slash, or a scheme is refused. It takes the gateway key
+every route does, and a key held to models, accounts or a spend limit is
+refused it. With Settings › Privacy masking on, a JSON body is masked and
+put back in the answer, and a body that isn't JSON is refused. Each
+request is a Requests row and a usage record, with tokens when the
+answer reports them. Ark's short paths (`images/generations`,
+`contents/generations/tasks[/<id>]`) still go under the key's base as
+before.
 
 Each `/v1/models` entry includes `reasoning` and `supported_reasoning_levels`
 (`[{"effort":"low"}, ...]`), and the same levels as plain names in
@@ -3023,8 +3094,10 @@ protocol-specific base URLs. Keep `3425` behind a firewall or VPN and do not
 expose it publicly without gateway-key authentication.
 
 Such a page is in **gateway mode**: it shows Providers, Gateway, Routing,
-Usage, Plugins and Settings, with no Agents, Sessions or Library tab, and
-Settings leaves out what is written into this machine's agents (provider in
+Usage, Sessions, Plugins and Settings, with no Agents or Library tab.
+Sessions lists only the sessions of other computers' agents that came
+through this gateway, never this machine's agents' session files
+([gateway sessions](subsystems/gateway-sessions.md)). Settings leaves out what is written into this machine's agents (provider in
 model names) and the desktop's alerts and tray. Codex's and Claude Code's own
 settings (Codex subagents, long conversations, Codex thread titles and the
 rest) are on the Agents page, in the agent's opened row, so a gateway has

@@ -747,8 +747,9 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		}
 	}
 	// a provider of a preset with such a plan among its regions takes one
-	// wherever it is, the editor showing it at those regions
-	vendor := provider.AccessKeyVendor(p)
+	// wherever it is, the editor showing it at those regions; a custom
+	// provider none until it has one (provider.AsksAccessKey, ysm119)
+	vendor := provider.AsksAccessKey(p)
 	if pr := provider.Preset(p.Preset); vendor == "" && pr != nil {
 		vendor, _ = presetAccessKey(*pr)
 	}
@@ -1912,7 +1913,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				// each account's own models are set on their own, with
 				// accountmodels
 				if old != nil {
-					in.AccountModels = old.AccountModels
+					in.AccountModels, in.AccountModelsAll = old.AccountModels, old.AccountModelsAll
 				}
 				// and their usage caps, with accountcap and windowcap, their
 				// limits on requests at once, with accountconcurrency, and
@@ -2152,6 +2153,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "keylisted":
+			// the models the key Account's own fetched list has, for the
+			// key picker's Select all available; nothing saved
+			ms := provider.KeyListed(in.ID, req.Account)
+			writeJSON(rw, map[string]any{"models": ms, "known": ms != nil})
+			return
 		case "accountcap":
 			if err := provider.SetAccountCap(in.ID, req.Account, req.Cap); err != nil {
 				fail(rw, err)
@@ -2474,7 +2481,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("GET /api/login/usage", func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
-		writeJSON(rw, provider.WithCapped(provider.LoginUsage(ctx, r.URL.Query().Get("agent"))))
+		// and each account's daily check-in, for its row's Check in now
+		agent := r.URL.Query().Get("agent")
+		writeJSON(rw, provider.LoginCheckins(agent, provider.WithCapped(provider.LoginUsage(ctx, agent))))
 	})
 	// Switching the account an agent is signed in to, among those magpie
 	// remembers, and forgetting one.

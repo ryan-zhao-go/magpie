@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/stats"
@@ -1251,9 +1253,10 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if err != nil {
 				return err
 			}
-			if r == provider.Manual || r == provider.Cheapest {
+			if r == provider.Manual || r == provider.Cheapest || r == provider.FreeExpiring {
 				// cheap: its keys and accounts all bill the provider's one
-				// price, so there is nothing to weigh
+				// price, so there is nothing to weigh; expiring weighs
+				// several subscriptions' free quota, a group's members
 				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or drain", r)
 			}
 			p.Routing = r
@@ -1457,7 +1460,24 @@ func serve() error {
 			fmt.Println(amber.Render("!"), x.Agent+":", x.Why)
 		}
 	}
-	return s.ListenAndServe(context.Background())
+	// an update put in where this runs from is restarted into
+	// (serve_follow.go)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	follow := newServeFollow(s, stop)
+	if follow != nil {
+		gateway.SetRestarter(follow.answer)
+		go follow.run(ctx)
+	}
+	err := s.ListenAndServe(ctx)
+	if exe := follow.restartTo(); exe != "" {
+		// the plugin hosts end, waited for, first, as magpie web's
+		// reexec does (#3285)
+		plugin.EndHosts()
+		log.Printf("magpie serve: restarting into %s", exe)
+		return serveReexec(exe, os.Args[1:], os.Environ())
+	}
+	return err
 }
 
 // importCmd adds the provider a magpie://import link describes, after

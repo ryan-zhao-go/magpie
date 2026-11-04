@@ -18,7 +18,9 @@ releases or OCI artifacts. `upstream_ref` accepts an upstream ref or commit SHA;
 use the same SHA for verification and release when an exact source is required.
 Scheduled runs continue to use `feature/answer-timeout` and current upstream
 `main`. The gateway gate covers both the upstream group budget and the fork's
-answer-timeout and reasoning-recovery regressions.
+answer-timeout and reasoning-recovery regressions. It also checks upstream's
+trusted-thinking handover alongside whole-summary byte-cap recovery, so a
+conflict resolution must retain both behaviors.
 
 A release is created as a draft and published only when all five assets are
 uploaded. A retry preserves an existing release's version and binary, uploads

@@ -336,7 +336,7 @@ func (p *Provider) setFirst(k KeyAccount) {
 
 func keyProtocolOK(proto Protocol) error {
 	switch proto {
-	case "", Chat, Responses, Anthropic:
+	case "", Chat, Responses, Anthropic, Gemini:
 		return nil
 	}
 	return fmt.Errorf("unknown protocol %q", proto)
@@ -449,6 +449,11 @@ func (p Provider) WithKey(k KeyAccount) Provider {
 					p.Anthropic = ""
 				}
 			}
+		}
+		// a custom provider's Gemini API, kept for a key made for it only
+		// (a relay's key per protocol, corddis_114 on Discord)
+		if k.Protocol != Gemini {
+			p.Gemini = ""
 		}
 	}
 	return p
@@ -654,6 +659,7 @@ func ReplaceKey(id, keyRef, key string) (was, now string, err error) {
 		p.Keys[i].Key = key
 	}
 	moveKeyed(p.AccountModels, keyRef, now)
+	moveKeyed(p.AccountModelsAll, keyRef, now)
 	moveKeyed(p.AccountProxies, keyRef, now)
 	moveKeyed(p.AccountConcurrency, keyRef, now)
 	moveKeyed(p.KeySpendCaps, keyRef, now)

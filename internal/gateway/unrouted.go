@@ -216,6 +216,9 @@ type unroutedHold struct {
 	shown  *Route       // under f.mu
 	ended  bool         // under f.mu: answered by magpie
 	over   bool         // under f.mu: its handler returned
+	// saved is closed once giveUp, having answered, has written its
+	// report: a test waits for it before its temp HOME goes
+	saved chan struct{}
 	// masking counts the maskings under way for it: one held there waits
 	// for Settings → Privacy's local model, and its error says so
 	masking atomic.Int32
@@ -586,7 +589,7 @@ func (s *Server) watchUnrouted(w http.ResponseWriter, r *http.Request, f *inflig
 		return w, r, func() {}
 	}
 	ctx, cancel := context.WithCancelCause(r.Context())
-	u := &unroutedHold{s: s, f: f, w: newHeldWriter(w), cancel: cancel, agent: callerFrom(r).agent}
+	u := &unroutedHold{s: s, f: f, w: newHeldWriter(w), cancel: cancel, agent: callerFrom(r).agent, saved: make(chan struct{})}
 	r = r.WithContext(context.WithValue(ctx, unroutedKey{}, u))
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = waitedBody{r.Body, u}
@@ -595,17 +598,34 @@ func (s *Server) watchUnrouted(w http.ResponseWriter, r *http.Request, f *inflig
 	f.mu.Lock()
 	f.unrouted = u
 	f.mu.Unlock()
+	// The timers reach u through held alone, let go as the handler
+	// returns. A stopped timer is not gone: the runtime keeps it, and its
+	// func, in the timer heap of the P that set it until its time comes
+	// or that P next tidies its heap, and an idle P never does. Through u
+	// a stopped timer kept the request, its body and its context's values
+	// up to unroutedMost after the handler returned (#5250: a socket's
+	// last 256 KB turn body was kept that way).
+	held := new(atomic.Pointer[unroutedHold])
+	held.Store(u)
+	via := func(m func(*unroutedHold)) func() {
+		return func() {
+			if u := held.Load(); u != nil {
+				m(u)
+			}
+		}
+	}
 	u.wmu.Lock()
-	u.unknown = time.AfterFunc(unroutedUnknown, u.checkUnknown)
-	u.most = time.AfterFunc(unroutedMost, u.checkMost)
+	u.unknown = time.AfterFunc(unroutedUnknown, via((*unroutedHold).checkUnknown))
+	u.most = time.AfterFunc(unroutedMost, via((*unroutedHold).checkMost))
 	u.wmu.Unlock()
-	show := time.AfterFunc(unroutedShow, u.show)
+	show := time.AfterFunc(unroutedShow, via((*unroutedHold).show))
 	return u.w, r, func() {
 		show.Stop()
 		u.wmu.Lock()
 		u.unknown.Stop()
 		u.most.Stop()
 		u.wmu.Unlock()
+		held.Store(nil)
 		f.mu.Lock()
 		// a timer that fired as the handler returned does nothing now
 		u.over = true
@@ -695,6 +715,7 @@ func (u *unroutedHold) giveUp(unknown bool) {
 		_ = http.NewResponseController(u.w.w).SetReadDeadline(time.Now())
 	}
 	u.ended = true
+	defer close(u.saved)
 	if u.shown == nil {
 		u.showLocked()
 	}

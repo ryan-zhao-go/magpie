@@ -92,7 +92,7 @@ jobs:
 
       - name: Test answer-timeout gateway behavior and races
         if: steps.existing.outputs.skip != 'true'
-        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout|TestAnswerTimeoutStreamingKeepalive|TestGroupWalkStopsAtItsBudget|TestResponsesMissingReasoning|TestForeignCarriedReasoning|TestUnreadableCarriedReasoning|TestClaudeClientCacheStreamingHeaders|TestClaudeClientCacheTryKeepalive|TestHeldUnsureKeptAlive|TestHeldGeminiStreamSendsNoComment|TestCompactionOverByteCapEveryTime)'
+        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout|TestAnswerTimeoutStreamingKeepalive|TestGroupWalkStopsAtItsBudget|TestResponsesMissingReasoning|TestForeignCarriedReasoning|TestUnreadableCarriedReasoning|TestClaudeClientCacheStreamingHeaders|TestClaudeClientCacheTryKeepalive|TestHeldUnsureKeptAlive|TestHeldGeminiStreamSendsNoComment|TestCompactionOverByteCapEveryTime|TestThinkingHeldFor|TestClaudeTrustedThinkingStreamsThroughGroup|TestClaudeTrustedThinkingErrorFailsOver|TestTrustedThinkingFailsOverOnEveryPath)'
 
       - uses: actions/setup-node@v4
         if: steps.existing.outputs.skip != 'true'
