@@ -30,6 +30,8 @@ def reconcile(remote, tag, name, notes, directory):
     if release is None:
         remote.create(tag, name, notes)
         release = remote.read_release(tag)
+    if release is None:
+        raise RuntimeError("Created release is not readable yet")
     expected = [line for line in notes.splitlines() if line.startswith(("- Upstream:", "- Patch branch:"))]
     if not expected:
         expected = [notes]
@@ -77,7 +79,11 @@ class GitHub:
                                 text=True, capture_output=True)
         if result.returncode:
             if "HTTP 404" in result.stderr:
-                return None
+                listing = subprocess.run(["gh", "api", f"repos/{self.repository}/releases?per_page=100"],
+                                         text=True, capture_output=True)
+                if listing.returncode:
+                    raise RuntimeError(f"Cannot list releases: {listing.stderr.strip()}")
+                return next((release for release in json.loads(listing.stdout) if release["tag_name"] == tag), None)
             raise RuntimeError(f"Cannot read release: {result.stderr.strip()}")
         return json.loads(result.stdout)
 

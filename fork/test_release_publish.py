@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 source = Path(__file__).with_name("release_publish.py")
@@ -90,6 +91,23 @@ class ReleasePublishTests(unittest.TestCase):
                 self.module.reconcile(remote, "fork-tag", "magpie new", "sources", Path(directory))
             self.assertEqual(remote.created, 0)
             self.assertEqual(remote.uploads, [])
+
+    def test_draft_is_found_when_tag_endpoint_returns_404(self):
+        import subprocess
+        responses = [
+            subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)"),
+            subprocess.CompletedProcess([], 0, '[{"tag_name":"fork-tag","draft":true,"name":"magpie original","assets":[]}]', ""),
+        ]
+        with patch.object(self.module.subprocess, "run", side_effect=responses):
+            release = self.module.GitHub("owner/repo").read_release("fork-tag")
+        self.assertTrue(release["draft"])
+
+    def test_missing_created_release_remains_retryable(self):
+        remote = FakeGitHub()
+        remote.create = lambda *arguments: None
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(RuntimeError):
+                self.module.reconcile(remote, "fork-tag", "magpie original", "sources", Path(directory))
 
 
 if __name__ == "__main__":
