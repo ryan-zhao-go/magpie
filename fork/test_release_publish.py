@@ -96,11 +96,13 @@ class ReleasePublishTests(unittest.TestCase):
         import subprocess
         responses = [
             subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)"),
-            subprocess.CompletedProcess([], 0, '[{"tag_name":"fork-tag","draft":true,"name":"magpie original","assets":[]}]', ""),
+            subprocess.CompletedProcess([], 0, '[{"id":12,"tag_name":"fork-tag","draft":true,"name":"magpie original","assets":[]},{"id":11,"tag_name":"fork-tag","draft":true,"name":"magpie original","assets":[{"name":"binary"}]}]', ""),
         ]
         with patch.object(self.module.subprocess, "run", side_effect=responses):
-            release = self.module.GitHub("owner/repo").read_release("fork-tag")
+            remote = self.module.GitHub("owner/repo")
+            release = remote.read_release("fork-tag")
         self.assertTrue(release["draft"])
+        self.assertEqual(remote.release_id, 11)
 
     def test_missing_created_release_remains_retryable(self):
         remote = FakeGitHub()

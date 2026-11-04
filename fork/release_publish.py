@@ -73,8 +73,13 @@ def reconcile(remote, tag, name, notes, directory):
 class GitHub:
     def __init__(self, repository):
         self.repository = repository
+        self.release_id = None
 
     def read_release(self, tag):
+        if self.release_id is not None:
+            result = subprocess.run(["gh", "api", f"repos/{self.repository}/releases/{self.release_id}"],
+                                    text=True, capture_output=True, check=True)
+            return json.loads(result.stdout)
         result = subprocess.run(["gh", "api", f"repos/{self.repository}/releases/tags/{tag}"],
                                 text=True, capture_output=True)
         if result.returncode:
@@ -83,22 +88,33 @@ class GitHub:
                                          text=True, capture_output=True)
                 if listing.returncode:
                     raise RuntimeError(f"Cannot list releases: {listing.stderr.strip()}")
-                return next((release for release in json.loads(listing.stdout) if release["tag_name"] == tag), None)
+                candidates = [release for release in json.loads(listing.stdout) if release["tag_name"] == tag]
+                if not candidates:
+                    return None
+                release = max(candidates, key=lambda item: (not item.get("draft"), len(item.get("assets", []))))
+                self.release_id = release["id"]
+                return release
             raise RuntimeError(f"Cannot read release: {result.stderr.strip()}")
-        return json.loads(result.stdout)
+        release = json.loads(result.stdout)
+        self.release_id = release["id"]
+        return release
 
     def create(self, tag, name, notes):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as file:
-            file.write(notes)
+            json.dump({"tag_name": tag, "name": name, "body": notes, "draft": True}, file)
             file.flush()
-            result = subprocess.run(["gh", "release", "create", tag, "--repo", self.repository,
-                                     "--verify-tag", "--draft", "--title", name, "--notes-file", file.name],
+            result = subprocess.run(["gh", "api", f"repos/{self.repository}/releases", "--method", "POST", "--input", file.name],
                                     text=True, capture_output=True)
+        if result.returncode == 0:
+            self.release_id = json.loads(result.stdout)["id"]
         if result.returncode and self.read_release(tag) is None:
             raise RuntimeError(result.stderr)
 
     def upload(self, tag, path):
-        result = subprocess.run(["gh", "release", "upload", tag, str(path), "--repo", self.repository],
+        import urllib.parse
+        endpoint = f"https://uploads.github.com/repos/{self.repository}/releases/{self.release_id}/assets?name={urllib.parse.quote(path.name)}"
+        result = subprocess.run(["gh", "api", endpoint, "--method", "POST", "--input", str(path),
+                                 "-H", "Content-Type: application/octet-stream"],
                                 text=True, capture_output=True)
         if result.returncode:
             release = self.read_release(tag)
@@ -107,12 +123,15 @@ class GitHub:
                 raise RuntimeError(result.stderr)
 
     def download(self, tag, name, directory):
-        subprocess.run(["gh", "release", "download", tag, "--repo", self.repository,
-                        "--pattern", name, "--dir", str(directory), "--clobber"], check=True)
+        release = self.read_release(tag)
+        asset = next(asset for asset in release["assets"] if asset["name"] == name)
+        with (directory / name).open("wb") as file:
+            subprocess.run(["gh", "api", f"repos/{self.repository}/releases/assets/{asset['id']}",
+                            "-H", "Accept: application/octet-stream", "--allow-escape-sequences"], stdout=file, check=True)
 
     def publish(self, tag):
-        result = subprocess.run(["gh", "release", "edit", tag, "--repo", self.repository,
-                                 "--draft=false", "--latest"], text=True, capture_output=True)
+        result = subprocess.run(["gh", "api", f"repos/{self.repository}/releases/{self.release_id}",
+                                 "--method", "PATCH", "-F", "draft=false", "-f", "make_latest=true"], text=True, capture_output=True)
         if result.returncode and not complete(self.read_release(tag)):
             raise RuntimeError(result.stderr)
 
