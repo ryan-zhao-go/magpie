@@ -2,11 +2,23 @@
 
 This directory keeps the answer-timeout patch on current upstream Magpie
 without letting Magpie's official updater replace it. The scheduled workflow
-rebases the patch branch in a disposable runner, tests that tree, and publishes
+merges upstream into the patch branch in a disposable runner, tests that tree, and publishes
 an immutable Linux AMD64 release. It also publishes the tested binary as a
 public OCI artifact at `ghcr.io/ryan-zhao-go/magpie-fork:latest` for hosts that
 cannot reach GitHub's Release web endpoint. It never force-pushes the patch
 branch.
+
+Merging preserves earlier conflict resolutions and the published patch history.
+A new conflict still stops the run before testing or publishing; resolve it in
+the patch branch rather than skipping the failing command.
+
+Manual runs check out the selected workflow branch. Set `verify_only=true` to
+run the release gates, including Chromium and WebKit, without creating tags,
+releases or OCI artifacts. `upstream_ref` accepts an upstream ref or commit SHA;
+use the same SHA for verification and release when an exact source is required.
+Scheduled runs continue to use `feature/answer-timeout` and current upstream
+`main`. The gateway gate covers both the upstream group budget and the fork's
+answer-timeout and reasoning-recovery regressions.
 
 The dev updater accepts only the `application/vnd.magpie.binary.gzip` layer
 from that exact GHCR repository, verifies its compressed OCI SHA-256 digest

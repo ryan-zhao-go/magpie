@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      verify_only:
+        description: Run all release gates without publishing
+        type: boolean
+        default: false
+      upstream_ref:
+        description: Upstream ref or SHA to verify and release
+        type: string
+        default: main
 
 concurrency:
   group: fork-release
@@ -25,19 +34,21 @@ jobs:
       - name: Check out the patch branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.PATCH_BRANCH }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || env.PATCH_BRANCH }}
           fetch-depth: 0
 
       - name: Identify sources and release
         id: meta
         shell: bash
+        env:
+          UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
         run: |
           set -euo pipefail
           git remote add upstream "https://github.com/$UPSTREAM_REPOSITORY.git"
-          git fetch --force --tags upstream main
-          upstream_sha=$(git rev-parse upstream/main)
+          git fetch --force --tags upstream "$UPSTREAM_REF"
+          upstream_sha=$(git rev-parse FETCH_HEAD)
           patch_sha=$(git rev-parse HEAD)
-          upstream_version=$(git tag --merged upstream/main --list 'v[0-9]*' --sort=-version:refname | sed -n '1p')
+          upstream_version=$(git tag --merged "$upstream_sha" --list 'v[0-9]*' --sort=-version:refname | sed -n '1p')
           test -n "$upstream_version"
           fork/release-meta.sh "$upstream_version" "$upstream_sha" "$patch_sha" "$(date -u +%Y%m%d%H%M%S)"
           printf 'upstream_sha=%s\npatch_sha=%s\n' "$upstream_sha" "$patch_sha" >>"$GITHUB_OUTPUT"
@@ -47,21 +58,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         shell: bash
         run: |
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [ "$VERIFY_ONLY" != true ] && gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo 'skip=true' >>"$GITHUB_OUTPUT"
           else
             echo 'skip=false' >>"$GITHUB_OUTPUT"
           fi
 
-      - name: Replay the patch on current upstream
+      - name: Merge current upstream without rewriting patch history
         if: steps.existing.outputs.skip != 'true'
         shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
         run: |
           git config user.name magpie-fork-release
           git config user.email magpie-fork-release@users.noreply.github.com
-          git rebase upstream/main
+          git merge --no-edit "$UPSTREAM_SHA"
+
+      - name: Test release workflow and updater
+        if: steps.existing.outputs.skip != 'true'
+        run: |
+          python3 fork/test_release_workflow.py
+          bash fork/release-meta-test.sh
+          bash fork/magpie-fork-update-test.sh
 
       - uses: actions/setup-go@v5
         if: steps.existing.outputs.skip != 'true'
@@ -74,7 +95,7 @@ jobs:
 
       - name: Test answer-timeout gateway behavior and races
         if: steps.existing.outputs.skip != 'true'
-        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout)'
+        run: go test -tags nogui -race -count=1 -timeout 10m ./internal/gateway -run '^(TestAnswerKinds|TestWholeAnswerKinds|TestAnswerTimeoutRace|TestGroupAnswerTimeout|TestAnswerTimeoutStreamingKeepalive|TestGroupWalkStopsAtItsBudget|TestResponsesMissingReasoning|TestForeignCarriedReasoning|TestUnreadableCarriedReasoning)'
 
       - uses: actions/setup-node@v4
         if: steps.existing.outputs.skip != 'true'
@@ -105,7 +126,7 @@ jobs:
           cp ../fork/systemd/magpie-fork-update.timer .
 
       - name: Preserve the exact tested source as a tag
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
         shell: bash
@@ -116,7 +137,7 @@ jobs:
           fi
 
       - name: Publish fork release
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
@@ -147,10 +168,10 @@ jobs:
             --notes-file release-notes.md
 
       - uses: oras-project/setup-oras@v1
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
 
       - name: Publish latest verified dev artifact
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.existing.outputs.skip != 'true' && inputs.verify_only != true
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           GH_TOKEN: ${{ github.token }}
