@@ -18,6 +18,7 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/budget"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -66,9 +67,10 @@ func Searcher() string {
 }
 
 // searcherName is a searcher by its provider and model; a Kimi Code plan,
-// which searches with no model, by its name.
+// which searches with no model, and a ChatGPT account by the backend's
+// search, by its name.
 func searcherName(p provider.Provider, model string) string {
-	if model == "" {
+	if model == "" || model == codexSearchModel {
 		return p.Name
 	}
 	if e, ok := provider.ServedEntryOf(p.ID + "/" + model); ok && e.Name != "" {
@@ -94,7 +96,7 @@ func AutoSearcher() string {
 // searches with no model (a Kimi Code plan's search service).
 func NamedSearchModel() string {
 	p, m, why := chosenSearcher()
-	if p == nil || why != "" || m == "" {
+	if p == nil || why != "" || m == "" || m == codexSearchModel {
 		return ""
 	}
 	return p.ID + "/" + m
@@ -260,6 +262,9 @@ func pagesSaid(pages []foundPage) (string, []Hit) {
 
 // askSearchAPI asks one search API for the query.
 func (s *Server) askSearchAPI(ctx context.Context, a provider.SearchAPI, query string) ([]foundPage, error) {
+	if v, ok := provider.SearchVendorOf(a.Vendor); ok && v.Plugin != "" {
+		return s.askPluginSearch(ctx, a, v, query)
+	}
 	var r *http.Request
 	var err error
 	post := func(path string, body any) {
@@ -401,6 +406,54 @@ func (s *Server) askSearchAPI(ctx context.Context, a provider.SearchAPI, query s
 	}
 	if len(pages) > searchHits {
 		pages = pages[:searchHits]
+	}
+	return pages, nil
+}
+
+// runPluginSearch asks a plugin's search API in the host (a test's has no host).
+var runPluginSearch = plugin.RunSearch
+
+// askPluginSearch asks a search API a plugin gives (its search hook) in the
+// plugin host. It is asked as a built-in is: from askSearchAPIKeys, so with
+// the user's keys in their order, the same time to answer, the same rest of
+// a key it refused (the plugin throws an error with a status) and the same
+// row in the request log; and with the query apiSearch masked. What it
+// found is cut and cleaned as a built-in's pages are.
+func (s *Server) askPluginSearch(ctx context.Context, a provider.SearchAPI, v provider.SearchVendor, query string) ([]foundPage, error) {
+	got, err := runPluginSearch(ctx, v.Plugin, v.PluginID, query, searchHits, a.Key, a.Base())
+	if err != nil {
+		var r plugin.SearchRefused
+		if errors.As(err, &r) {
+			msg := r.Msg
+			if a.Key != "" {
+				msg = strings.ReplaceAll(msg, a.Key, provider.MaskSearchKey(a.Key))
+			}
+			if keyRefusal(r.Status) {
+				return nil, searchRefused{r.Status, msg, r.RetryAfter}
+			}
+			return nil, errors.New(msg)
+		}
+		if ctx.Err() != nil {
+			return nil, errors.New("no answer in time")
+		}
+		if a.Key != "" {
+			err = errors.New(strings.ReplaceAll(err.Error(), a.Key, provider.MaskSearchKey(a.Key)))
+		}
+		return nil, err
+	}
+	var pages []foundPage
+	for _, r := range got {
+		if r.URL == "" {
+			continue
+		}
+		title := searchPlain(r.Title)
+		if title == "" {
+			title = r.URL
+		}
+		pages = append(pages, foundPage{Title: title, URL: r.URL, Text: clipText(searchPlain(r.Text), pageText), Age: r.Age})
+		if len(pages) == searchHits {
+			break
+		}
 	}
 	return pages, nil
 }

@@ -447,8 +447,10 @@ its end, however long the burst took to come: one whose content came in under
 a quarter of its window (`flow_ms`, from a tenth of its bytes to nine tenths,
 scaled to the whole), or that reasoned and whose answer would have come over
 20 times faster than its reasoning came before its first text (its text came
-with the burst). The time a burst takes to come is not the time it took to
-write, and that time isn't seen. History is read the same way, as it keeps the
+with the burst), or whose window was under a second after a wait over four
+times longer (`usage.HeldWindowMs`: 392 tokens 0.25 s after an 8.2 s first
+token read 1,539 tok/s from gpt-6.1-sol). The time a burst takes to come is
+not the time it took to write, and that time isn't seen. History is read the same way, as it keeps the
 reasoning, the first text and the flow; a record from before the flow was kept
 is told by its reasoning's pace alone.
 
@@ -550,7 +552,12 @@ vendors, and it answers from what it has kept (`GET /v1/magpie/quotas/cards`).
 A card's refresh here has it read that card once more
 (`POST /v1/magpie/quotas/refresh`, at most once in 30 seconds a card); until it
 has read anything, the remote's one card says so. Their history is shown with
-its own. A Codex reset or a check-in is pressed on that computer, not here.
+its own. A check-in is pressed on that computer, not here. A Codex card's
+reset can be used from here (#3850): **Use one…** asks first, as for this
+computer's accounts, and that magpie spends it on its account
+(`POST /v1/magpie/quotas/codex-reset`, below). It takes the provider's key
+with full access there; a read-only or held key is told so. A GLM team's
+resets are still used on bigmodel.cn.
 
 Codex's native image tool first asks the provider that served its conversation
 turn for the requested image model. If that provider does not list the model,
@@ -613,8 +620,11 @@ starting with `sk-magpie-`, unlike any other key); left empty, magpie makes
 one. The list shows only its last four characters, and it is counted,
 limited and restricted as any other key, from this computer too.
 Rename, disable, rotate or remove keys independently; rotation and removal
-ask for confirmation. Rotation keeps the name, enabled state and usage
-history; other keys are unchanged. While sharing is on, **Gateway → Connect**
+ask for confirmation. Rotation keeps the name, enabled state, limits and usage
+history; other keys are unchanged. Its dialog takes an optional value of
+your own, checked as a new key's is (8–256 printable ASCII characters, no
+spaces, not starting with `sk-magpie-`, no other gateway key's and none of
+your providers' API keys); left empty, magpie makes one. While sharing is on, **Gateway → Connect**
 offers loopback and shared addresses, plus enabled gateway keys, for all
 connection examples. With sharing off, Connect keeps the original **API key**
 field and local `magpie` token, without a gateway-key picker. Its arbitrary
@@ -627,6 +637,7 @@ magpie gateway-key add "Remote laptop" # prints the new credential once
 magpie gateway-key add Family --key -  # keeps a key clients already send, read from stdin
 magpie gateway-key list                # ids, names, enabled state and masked keys
 magpie gateway-key rotate <id>         # prints the replacement; identity stays the same
+magpie gateway-key rotate <id> --key -  # gives it a value of your own instead, read from stdin
 magpie gateway-key remove <id>         # revokes remote access
 magpie gateway-key limit <id> week --tokens 2m --cost 5   # its own limit
 magpie gateway-key limit <id> list     # each limit, used, left and reset
@@ -1146,6 +1157,43 @@ export const LemonPlugin = async () => ({
 In TypeScript, `icon` and `placeholder` aren't in OpenCode's types: build
 the hook as a variable (or cast it), or put the icon in `package.json`.
 
+#### Web search APIs from a plugin
+
+A plugin can add a web search API to Settings › Models › Web search with a
+`search` hook (magpie's own; OpenCode ignores it). It is listed after
+Tavily, Brave and the rest under its own name, and added, keyed, switched
+off, reordered and removed like them (`magpie search add <plugin>:<id> <key>`
+on the command line). magpie keeps its keys (several, tried in turn, a refused
+one resting), its order and its place in the request log, masks the query
+as it does for every search API, and asks the plugin only while the
+plugin is on and the Web search plugin is.
+
+```js
+export const MojeekSearch = async () => ({
+  search: {
+    mojeek: {                      // [a-z0-9-], at most 32; the API is `<plugin>:mojeek`
+      name: "Mojeek",              // its name in the list
+      keysURL: "https://www.mojeek.com/services/api/", // "Get a key" link, optional
+      keyOptional: false,          // true: it answers with no key
+      url: false,                  // true: the user gives its address (a SearXNG's)
+      async execute({ query, count, key, url }, ctx) {
+        const r = await fetch(`https://api.mojeek.com/search?fmt=json&q=${encodeURIComponent(query)}&t=${count}&api_key=${key}`, { signal: ctx.abort })
+        if (!r.ok) throw Object.assign(new Error(await r.text()), { status: r.status }) // 401, 402, 403, 429 rest the key
+        const j = await r.json()
+        return j.response.results.map((x) => ({ title: x.title, url: x.url, text: x.desc }))
+      },
+    },
+  },
+})
+```
+
+`execute` returns `[{ title, url, text?, age? }]` (or `{ results: [...] }`);
+magpie strips tags and cuts each page's text. A throw with a numeric
+`status` (and `retryAfter`, its Retry-After) is the API refusing the key,
+treated as a built-in's 401/402/403/429 is; any other throw is a failure
+and the next search API is asked. It has the time a search API has
+(a quarter of a search's limit); `ctx.abort` fires then.
+
 #### Gateway middleware
 
 A plugin can also be gateway middleware: `onRequest(body, ctx)` sees each
@@ -1600,9 +1648,8 @@ one provider serves it.
 `listed=no` (the group editor's **Model lists: The group alone**) keeps the
 models a group names, and those its patterns match, out of `magpie models`,
 `/v1/models` and every agent's list, so a client offers the group alone.
-A signed-in subscription's own models (a ChatGPT, Claude, Copilot or plugin
-account's) stay in every agent's list: the group is added on top of them,
-and only a client that is no agent is given the group alone.
+A signed-in subscription's models leave the lists too. Codex alone keeps its
+ChatGPT sign-in's own models, which its app reaches on that sign-in.
 They are still served: the group routes over them, and a request naming one
 as `provider/model` is answered. A group in it keeps its own setting, and a
 group switched off keeps nothing out. `listed=yes` lists them again. To keep
@@ -1717,7 +1764,7 @@ result for every request: who went first, and why.
    the conversation stays on its account, resting, spent or past its cap,
    and its errors go to the agent.
    With *Stays: Session* or *Strict* under Smart, Least used first or
-   Weekly pace, a new conversation goes to the account the fewest other
+   Use before expiry, a new conversation goes to the account the fewest other
    conversations of the last 30 minutes are on (of those not resting and
    under 90%), so sessions side by side each keep an account of their own;
    a Claude Code subagent goes with its session's account.
@@ -1726,9 +1773,9 @@ So routing decides who goes first only for a conversation nobody has
 answered yet. An account that has used 90% goes behind the others for new
 conversations, but a conversation already on it stays there until 98%.
 
-**The routings.** Smart, Least used first and Weekly pace go by the share
+**The routings.** Smart, Least used first and Use before expiry go by the share
 used of the fullest window that counts the model, the 5-hour window
-included. Smart and Weekly pace put an account behind the others once a
+included. Smart and Use before expiry put an account behind the others once a
 window is at 90% or more, and behind those once one is at 98% or more,
 each of these groups ordered by the share used.
 
@@ -1771,11 +1818,17 @@ each of these groups ordered by the share used.
 - **Least used first**: the lowest share used first; then the account
   magpie sent the fewest tokens lately (half of them stop counting after an
   hour). An account not known counts as unused.
-- **Weekly pace**: the account with the highest pace first. Pace is the
+- **Use before expiry**: the account with the highest pace first. Pace is the
   share of the week left divided by the hours until the week renews (at
   least 1): 60% left with 20 hours to go is 3 per hour. With two weekly
   windows that count the model (Opus's own and the general one), the lower
-  pace counts. An account with no week goes by its 5 hours. Accounts whose
+  pace counts. An account with no week goes by its 5 hours. Credits in a
+  window that expire before it renews (WorkBuddy's check-in credits) count
+  as lost then: their share of the window, divided by the hours until they
+  expire (at least 1), is the window's pace when it is the higher, so 70 of
+  500 credits expiring in 14 hours (1 per hour) beat a month's 100% over
+  28 days. When the vendor doesn't say how much expires, all that is left
+  counts. Accounts whose
   pace is within a tenth of the highest in their band count as alike, and
   among them the one magpie sent the fewest tokens lately goes first. A
   Claude account not known goes first once, as in Smart; another unknown
@@ -1829,7 +1882,7 @@ depends on the routing:
 | In turn | Where the rotation goes next. |
 | Smart | Only between accounts whose windows all renew in the same hours, or whose shares used are equal. |
 | Least used first | Only between accounts with the same share used and the same tokens sent lately. |
-| Weekly pace | Only between accounts in the same pace band that magpie sent the same tokens lately, in practice none since magpie started. |
+| Use before expiry | Only between accounts in the same pace band that magpie sent the same tokens lately, in practice none since magpie started. |
 | Speed first | Only between those within a tenth of each other's speed, and among those not measured lately. |
 | Cheapest first | Only between those that cost the same now, and among those with no known price. |
 
@@ -2255,11 +2308,31 @@ The accounts that answered through the gateway in the last 30 days are
 shown, every one when none has; `magpie statusline claude` (a provider, or
 an account's email, login or name) keeps only those. It works however Claude
 Code signs in to the gateway, unlike the `anthropic-ratelimit-*` headers,
-which Claude Code reads only while signed in to claude.ai. magpie doesn't
-write it into Claude Code's settings, where another status line may be;
-add it to `~/.claude/settings.json` yourself:
-`"statusLine": {"type": "command", "command": "magpie statusline"}`. With
-the gateway not running it prints an empty line.
+which Claude Code reads only while signed in to claude.ai. The status
+line square on Claude Code's row in the Agents page (or `magpie claude
+statusline on`) turns it on: it writes `statusLine` in
+`~/.claude/settings.json` to run this magpie by its full path
+(`"statusLine": {"type": "command", "command": "/Applications/Magpie.app/Contents/MacOS/magpie statusline"}`),
+and off, or Disconnect, takes out only a status line that runs
+`magpie statusline`. A status line of the user's own (claude-hud, a script)
+is never written over: the square isn't shown while one is there, and on is
+refused. Claude Code runs a changed status line in its open sessions too,
+so nothing needs a restart. It is offered for Claude Code on this computer,
+not in a WSL distro. With the gateway not running it prints an empty line.
+
+Claude Code on another computer than magpie (magpie in Docker, on a server)
+can't be switched on from the square: magpie can't write that computer's
+settings.json, and the command would name a binary inside the container.
+`GET` or `POST /v1/magpie/statusline` answers the same line as plain text, so
+that computer needs only curl. The optional `?session=<id>` (or, in a POST,
+the `session_id` of the JSON Claude Code sends on stdin) adds the model like
+`/v1/magpie/route`, and `?only=` (comma separated, repeatable) keeps the
+accounts as `magpie statusline claude` does. A caller that isn't this
+computer needs a gateway key, a read-only one included (it gets the windows
+without the model); a key held to a budget, models or accounts sees only
+what it may. On the computer Claude Code runs on:
+`"statusLine": {"type": "command", "command": "curl -fsS -m 1 -H 'Authorization: Bearer <gateway key>' --data-binary @- http://<host>:3425/v1/magpie/statusline || true"}`.
+`magpie web` shows this command with its own address under Settings → About.
 
 `magpie heap [<file>]` is for a report of magpie holding too much memory: a
 macOS `sample` of the app shows Go's frames as `???`. It asks the running
@@ -2371,6 +2444,23 @@ told none of the cards is answered `/v1/magpie/quotas/cards` 403
 that nothing was read. `/v1/magpie/concurrency` and `/v1/magpie/usage`
 still refuse it.
 
+A Codex account's rate-limit reset can be used through the gateway as
+the Usage page's **Use a reset** does (#3850, the same code):
+`POST /v1/magpie/quotas/codex-reset?user=<email>` spends one of that
+account's resets (`&credit=<id>` one of its `resets.each`, else the one
+that runs out first) and answers `{"code": "reset", "windows": 2}`, or
+`no_credit` or `nothing_to_reset` with nothing spent. It can't be
+undone, so it takes an enabled gateway key with full access, from this
+computer too: a request without a key is refused 401 even on loopback, a
+browser page or app the gateway otherwise lets in there (Origin `null`, an
+app's scheme, a `*.localhost` page) included; a read-only key 403
+`gateway_key_read_only`; a key held to a budget, models or accounts 403
+`gateway_key_held`, whether or not it is told quotas. The account is
+always named (400 without `user`). A second ask for the same account
+while one is out is answered 409. Another magpie's Codex card uses this,
+and so can an app reading `/v1/magpie/quotas/cards`, such as a DSH
+provider plugin, with a key of full access.
+
 An app of your own can read the Usage page's numbers too.
 `GET /v1/magpie/usage?period=<today|week|month|all>` is the page's summary,
 the same JSON as the window's `/api/usage` (`path` is left out for another
@@ -2405,6 +2495,23 @@ itself, so it can be polled every second. It answers as
 `/v1/magpie/quotas` does: this machine, another only with a gateway key,
 and never a held key.
 
+Each request as it is routed, live, for a display that shows them
+(#3387): `GET /v1/magpie/route-events/snapshot` answers `cursor`, `active`
+and `routes`, the requests going now; then
+`GET /v1/magpie/route-events?after=<cursor>` streams each change after that
+cursor as server-sent events, one `route` event a change (`id` is its
+cursor, `kind` what changed, `route` the request as it is now: `id`,
+`time`, `agent`, `provider`, `model`, `attempt`, `fallback`, `phase`,
+`status`, `failed`, `ms`, `ttft_ms`). A display replaces its request of
+that `id` and drops it once `phase` is `done` or `dropped`. A 409
+`snapshot_required`, an `event: reset`, a restart of magpie or a dropped
+connection means: take a snapshot again. No session, account, key, folder,
+prompt, reply or error text is in it. It answers as `/v1/magpie/usage`
+does: this machine, another only with a gateway key while magpie is
+shared, and never a held key. Give a display a read-only key,
+`magpie gateway-key add Screen --read-only`, which can spend nothing. See
+the [route event contract](subsystems/gateway-routing.md#route-events-for-a-display).
+
 An app that calls its vendor itself, not through magpie, can report those
 calls so the Usage page counts them: `POST /v1/magpie/usage/requests` with
 `Content-Type: application/json`. The body is one record or an array of up
@@ -2430,7 +2537,8 @@ curl -s http://127.0.0.1:3425/v1/magpie/usage/requests \
   be before `ttft_ms` or after `ms`. `flow_ms` is how long the content
   took to come, from where the speed is timed: the time from a tenth of
   it to nine tenths, times 10/8 (at most `ms` × 10/8). A reply whose
-  content came in under a quarter of its window was held and let go in a
+  content came in under a quarter of its window, or whose window was under
+  a second after a wait over four times longer, was held and let go in a
   burst, and tells no speed. Leave out what you don't know.
 - **Pricing:** a record without `cost` is priced at magpie's prices for
   its provider and model.
@@ -2873,6 +2981,12 @@ published on the host) for the address it shows and prints to be the one
 other machines use; behind a reverse proxy, set it to that external base URL
 and follow the [authentication requirements above](#connecting-anything-else),
 especially when the proxy reaches magpie over loopback.
+Other containers on the same host reach the gateway at the host's Docker
+bridge address on the published port, `http://172.17.0.1:3425` on the default
+bridge; magpie reads it from the container's default route and lists it as
+"Other containers on this host" (in the browser UI and in `magpie web`'s log).
+On Linux `host.docker.internal` is there only for a container given
+`extra_hosts: ["host.docker.internal:host-gateway"]`.
 
 For the browser UI run the image with `magpie web --addr 0.0.0.0:3430 --no-open`
 in place of the default `serve`, and open
@@ -3244,6 +3358,28 @@ MAGPIE_OTEL_ENABLED=true MAGPIE_OTEL_ENDPOINT=http://localhost:4318 magpie serve
 - `MAGPIE_OTEL_BODIES_WHOLE`: `true` or `false`, off by default; with bodies on,
   keeps them entire rather than cut at 256 KB. A long reply is written to a
   temporary file; a body too large for the collector is still refused.
+- `OTEL_RESOURCE_ATTRIBUTES`: the standard OpenTelemetry variable, merged into
+  the resource of both traces and metrics, for example to tell servers apart:
+
+  ```sh
+  OTEL_RESOURCE_ATTRIBUTES='service.instance.id=magpie-prod-01,host.name=server-a,deployment.environment.name=production' \
+    MAGPIE_OTEL_ENABLED=true MAGPIE_OTEL_ENDPOINT=http://localhost:4318 magpie serve
+  ```
+
+  Comma-separated `key=value` pairs, as the
+  [OTel resource SDK spec](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/sdk.md#specifying-resource-information-via-an-environment-variable)
+  has them: keys and values are trimmed and percent-decoded (write `,` as
+  `%2C`, `=` as `%3D` and `%` as `%25`; `+` stays a plus), every value is a
+  string, and the last of a repeated key wins. Any invalid entry (no `=`, an
+  empty key, a bad escape, bytes that aren't UTF-8 once decoded, an empty
+  entry such as a trailing comma) discards the whole variable: magpie logs
+  which entry, never its contents, and exports with the default resource.
+  Nothing else about the machine is looked up or sent.
+- `OTEL_SERVICE_NAME`: the resource's `service.name`, over a `service.name` in
+  `OTEL_RESOURCE_ATTRIBUTES`. With neither set, or set empty, it is `magpie`.
+
+  Neither variable turns export on, and both are read in the process that
+  exports (the app, or `magpie serve`), so restart it after changing them.
 
 For Langfuse, pick **Collector › Langfuse**, then the host (Cloud EU
 `https://cloud.langfuse.com`, Cloud US `https://us.cloud.langfuse.com`, or
@@ -3490,6 +3626,8 @@ The gateway and usage:
   page's history
 - `affinity.json` — which key or account answered each conversation, so a
   restart keeps it there while the vendor has it cached
+- `vision-cache.jsonl` — successful inline-image descriptions reused after a
+  restart (0600); `vision-cache.jsonl.lock` serializes writers during handover
 - `served.json` — when each account and key last answered
 - `quotas.json` — the last allowance each account reported
 - `quota-history.json`, `balance-history.json` — allowance and balance

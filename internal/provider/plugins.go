@@ -147,6 +147,30 @@ func (p Provider) PluginProvider() string {
 	return p.Account.plugin.ID
 }
 
+// ModelLoads is how busy each model is that a plugin reported a load for
+// in the last plugin.LoadFresh, by the ref an agent's model picker gives
+// it ("provider/model", lowercased), the figure the provider editor shows
+// by the model (plugin.ModelLoad): a model the user lists by another id
+// (SetModelID) under that id, one listed as its own under its own. A
+// model@size the plugin reported only by its model is left for the
+// reader to look up by the model (axelburks on Discord: the Agents page
+// shows it too). Nothing reported, nothing more is read.
+func ModelLoads(now time.Time) map[string]float64 {
+	out := map[string]float64{}
+	for pp, ms := range plugin.FreshLoads(now) {
+		id := PluginID(pp)
+		for own, pct := range ms {
+			out[strings.ToLower(id+"/"+own)] = pct
+		}
+		for own, listed := range modelIDsOf(id).local {
+			if pct, _, ok := plugin.ModelLoad(pp, own, now); ok {
+				out[strings.ToLower(id+"/"+listed)] = pct
+			}
+		}
+	}
+	return out
+}
+
 // OpenAIBase is where p takes the OpenAI-shaped requests that are no chat
 // (embeddings, rerank, speech, transcriptions): its Chat base, and a
 // plugin's fetch under plugin://<id>/v1 whatever API its chat models are
@@ -928,9 +952,21 @@ func (p Provider) Do(client *http.Client, req *http.Request) (*http.Response, er
 	return p.do(client, req)
 }
 
+// SendsThroughPlugin, set by the gateway, is told of each request handed
+// to a plugin's account, which goes past the gateway's own transport, as
+// it goes, and what came back for it: the call's headers both ways, for
+// Recent calls (gateway's wire_headers.go).
+var SendsThroughPlugin func(id string, req *http.Request) func(*http.Response, error)
+
 func (p Provider) do(client *http.Client, req *http.Request) (*http.Response, error) {
 	if p.Account != nil && p.Account.transport != nil {
-		return p.Account.transport(req)
+		if SendsThroughPlugin == nil {
+			return p.Account.transport(req)
+		}
+		done := SendsThroughPlugin(p.ID, req)
+		res, err := p.Account.transport(req)
+		done(res, err)
+		return res, err
 	}
 	if p.Account != nil && p.Account.clientFor != nil {
 		if c := p.Account.clientFor(req); c != nil {

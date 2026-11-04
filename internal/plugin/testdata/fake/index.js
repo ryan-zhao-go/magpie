@@ -96,6 +96,14 @@ export const FakePlugin = async ({ client }) => ({
       cfg.provider[ID].models["sensenova-u1.5-lite"] = { name: "sensenova-u1.5-lite", limit: { context: 131072, output: 32768 } }
       cfg.provider[ID].models["flux-2"] = { name: "Flux 2", provider: { npm: "@ai-sdk/anthropic" }, limit: { context: 1000, output: 100 } }
     }
+    // $FAKE_LOOMY: iFlytek's Loomy gateway's three image generators as its
+    // /v1/models lists them (#4913), on the provider's openai-compatible;
+    // all three draw on its images API
+    if (process.env.FAKE_LOOMY) {
+      cfg.provider[ID].models["Hy-Image-3.5-preview"] = { name: "Hy-Image-3.5-preview", limit: { context: 131072, output: 32768 } }
+      cfg.provider[ID].models["doubao-seedream-5-lite"] = { name: "doubao-seedream-5-lite", limit: { context: 131072, output: 32768 } }
+      cfg.provider[ID].models["qwen-image-3.0-pro"] = { name: "qwen-image-3.0-pro", limit: { context: 131072, output: 32768 } }
+    }
     // $FAKE_GOOGLE: the provider's models are on Gemini's API, as XYenon's
     // Google AI Studio plugin gives them all (@ai-sdk/google), so it has
     // no OpenAI-compatible model
@@ -362,6 +370,14 @@ export const FakePlugin = async ({ client }) => ({
       // the vendor unreachable: the list kept, as Zed's plugin keeps it
       if (auth?.refresh === "r-unreachable") await fetch("http://127.0.0.1:9/models").catch(() => {})
       if (auth?.type === "oauth" && auth.refresh?.startsWith("rot-")) {
+        // $FAKE_MODELS_HOLD: say the hook came ($FAKE_MODELS_HOLD.in), and
+        // spend the token only once that file is there
+        const hold = process.env.FAKE_MODELS_HOLD
+        if (hold) {
+          const fs = await import("node:fs")
+          fs.writeFileSync(hold + ".in", "")
+          while (!fs.existsSync(hold)) await new Promise((r) => setTimeout(r, 10))
+        }
         await client.auth.set({ path: { id: ID }, body: { ...auth, refresh: auth.refresh + "+" } })
       }
       // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00

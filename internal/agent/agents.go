@@ -97,16 +97,29 @@ func codexAppRoute() (route string, out, known bool) {
 	}
 	out = a.AppOut != nil && a.AppOut()
 	var b strings.Builder
+	var mp string
 	for _, k := range []string{"model_provider", "openai_base_url"} {
 		v, _ := edit.GetTOMLTop(a.Path, k)
+		if k == "model_provider" {
+			mp = v
+		}
 		b.WriteString(k + "=" + v + "\n")
 	}
 	t, _ := edit.GetTOMLTable(a.Path, "model_providers."+magpieID)
 	b.WriteString("magpie.base_url=" + t["base_url"] + "\n")
-	// and whether it requires OpenAI auth, which decides whether the app
-	// has its ChatGPT account at all (openaiAuth in codex.go): read as the
-	// app-server starts, like the rest
-	b.WriteString("magpie.requires_openai_auth=" + t["requires_openai_auth"] + "\n")
+	// and, while magpie's table is Codex's provider, whether it requires
+	// OpenAI auth, which decides whether the app has its ChatGPT account
+	// at all (openaiAuth in codex.go): read as the app-server starts, like
+	// the rest. The app-server reads the account of the provider Codex is
+	// on (codex-rs account_state), so beside the sign-in, on Codex's
+	// built-in provider, the key follows the account running out and
+	// coming back (openaiAuth) with nothing for the app to read again:
+	// counted there, it ended the app's app-server at the limit and again
+	// at the reset, and the ChatGPT app showed an error and relaunched
+	// each time (xiaoq6285 on Discord, #4550)
+	if mp == magpieID {
+		b.WriteString("magpie.requires_openai_auth=" + t["requires_openai_auth"] + "\n")
+	}
 	if out {
 		b.WriteString("out\n")
 	}
@@ -332,11 +345,25 @@ func openCodeSpelled(path string, v1 func() string) func(string) bool {
 			return false
 		}
 		if !strings.Contains(p, ".") {
-			base, _ := edit.GetJSON(path, "provider."+p+".options.baseURL")
-			return sameGateway(base, v1())
+			return sameGateway(openCodeBaseURL(path, p), v1())
 		}
 		return ownGatewayProvider(path, ref, v1()) == p
 	}
+}
+
+// openCodeBaseURL is the base URL of the provider named p in an OpenCode
+// config at path. OpenCode 2 keeps a provider under providers, its base
+// URL in settings, and reads one there before the same name under
+// provider, OpenCode 1's spelling (packages/core/src/config/normalize.ts,
+// mergeMaps, at v2.1.4); OpenChamber's provider form saves one there and
+// takes it out of provider (#3915).
+func openCodeBaseURL(path, p string) string {
+	if _, ok := edit.GetJSON(path, "providers."+p); ok {
+		base, _ := edit.GetJSON(path, "providers."+p+".settings.baseURL")
+		return base
+	}
+	base, _ := edit.GetJSON(path, "provider."+p+".options.baseURL")
+	return base
 }
 
 // pair joins a provider field and a model field into one "provider/model"
@@ -484,10 +511,14 @@ func ownProvider(native func(p string) []catalog.Model, p string) []Option {
 		ms = codexServed(p)
 	}
 	opts := group(name, options(ms, p+"/"))
-	if ic := providerIcon(p); ic != "" {
-		for i := range opts {
-			opts[i].GroupIcon = ic
-		}
+	ic := providerIcon(p)
+	for i := range opts {
+		opts[i].GroupIcon = ic
+		// asked of the vendor on the agent's own sign-in or key: picked on
+		// a connected agent it takes the agent off magpie, which the
+		// picker says and asks first (maxleebeta: Pi's own OpenCode Go
+		// model turned 「接入」 off, with nothing said)
+		opts[i].Direct = name
 	}
 	return opts
 }
@@ -1000,7 +1031,8 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			break
 		}
 	}
-	provider := openCodeKept(path, func() any { return magpieProviderJSONAt("opencode", id, at.gw()) })
+	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
+	provider := openCodeKept(path, block)
 	opts := func(key string) func(map[string]string) []Option {
 		return func(cur map[string]string) []Option {
 			return withVia(ownOptions(auth, cur[key]), id, magpieID+"/")
@@ -1022,7 +1054,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 				if onMagpie() {
 					return nil
 				}
-				return edit.DelJSON(path, "provider."+magpieID)
+				return edit.DelJSON(path, "provider."+magpieID, openCodeNativeKey)
 			}
 			v, err := openCodeRefAt(at, path, id, v)
 			if err != nil {
@@ -1039,17 +1071,21 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			if !usesMagpie(get("model"), get("small_model")) {
 				return ""
 			}
-			return wiringOff(name, path, func(k string) (string, bool) { return edit.GetJSON(path, "provider."+magpieID+".options."+k) },
-				"baseURL", at.v1(), "apiKey", openCodeKeyAt(id, at.gw()))
+			return openCodeWiringOff(name, path, at.v1(), openCodeKeyAt(id, at.gw()))
 		},
 		ListOnly: true,
 		Sync: func() error {
+			var err error
 			// a model of magpie's chosen, but its provider gone from the
 			// file: put it back, or the agent has nothing to send it to
 			if _, ok := edit.GetJSON(path, "provider."+magpieID); !ok && onMagpie() {
-				return edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
+				err = edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
+			} else {
+				err = syncJSONInOrder(path, "provider."+magpieID, provider)
 			}
-			return syncJSONInOrder(path, "provider."+magpieID, provider)
+			// and where the file keeps it under providers too, which
+			// OpenCode 2 reads instead, there as well (#3883)
+			return errors.Join(err, syncOpenCodeNative(path, block))
 		},
 		Fields: []Field{
 			{Key: "model", Label: "model", Get: jsonGet(path, "model"), Set: set("model"), Options: opts("model")},
@@ -1088,27 +1124,50 @@ func openCodeRefAt(at place, path, id, v string) (string, error) {
 	if own := ownGatewayProvider(path, ref, at.v1()); own != "" {
 		return own + "/" + ref, nil
 	}
-	provider := openCodeKept(path, func() any { return magpieProviderJSONAt("opencode", id, at.gw()) })
-	return v, edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
+	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
+	if err := edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: openCodeKept(path, block)()}); err != nil {
+		return v, err
+	}
+	return v, syncOpenCodeNative(path, block)
 }
 
 // ownGatewayProvider is the provider in an OpenCode config, other than
 // magpie's own, whose baseURL is magpie's gateway (v1, as the agent reaches
 // it) and that lists the model ref, as a layout of one provider per family
-// of magpie's models has; "" when there is none.
+// of magpie's models has; "" when there is none. A provider under
+// providers is read as OpenCode 2 reads it, before the same name under
+// provider (openCodeBaseURL).
 func ownGatewayProvider(path, ref, v1 string) string {
-	raw, ok := edit.GetJSON(path, "provider")
-	if !ok {
-		return ""
+	type own struct {
+		base   string
+		models map[string]json.RawMessage
 	}
-	var ps map[string]struct {
-		Options struct {
-			BaseURL string `json:"baseURL"`
-		} `json:"options"`
-		Models map[string]json.RawMessage `json:"models"`
+	ps := map[string]own{}
+	if raw, ok := edit.GetJSON(path, "provider"); ok {
+		var v1s map[string]struct {
+			Options struct {
+				BaseURL string `json:"baseURL"`
+			} `json:"options"`
+			Models map[string]json.RawMessage `json:"models"`
+		}
+		if json.Unmarshal([]byte(raw), &v1s) == nil {
+			for name, p := range v1s {
+				ps[name] = own{p.Options.BaseURL, p.Models}
+			}
+		}
 	}
-	if json.Unmarshal([]byte(raw), &ps) != nil {
-		return ""
+	if raw, ok := edit.GetJSON(path, "providers"); ok {
+		var v2s map[string]struct {
+			Settings struct {
+				BaseURL string `json:"baseURL"`
+			} `json:"settings"`
+			Models map[string]json.RawMessage `json:"models"`
+		}
+		if json.Unmarshal([]byte(raw), &v2s) == nil {
+			for name, p := range v2s {
+				ps[name] = own{p.Settings.BaseURL, p.Models}
+			}
+		}
 	}
 	names := make([]string, 0, len(ps))
 	for name := range ps {
@@ -1117,7 +1176,7 @@ func ownGatewayProvider(path, ref, v1 string) string {
 	sort.Strings(names)
 	for _, name := range names {
 		p := ps[name]
-		if _, has := p.Models[ref]; name != magpieID && has && sameGateway(p.Options.BaseURL, v1) {
+		if _, has := p.models[ref]; name != magpieID && has && sameGateway(p.base, v1) {
 			return name
 		}
 	}
@@ -1614,7 +1673,29 @@ func cursor(home string) *Agent {
 
 func copilot(home string) *Agent {
 	dir := filepath.Join(home, ".copilot")
+	// COPILOT_HOME moves the whole folder, settings.json and providers.json
+	// with it (Copilot's `copilot help environment`)
+	if d := appdir.Getenv("COPILOT_HOME"); d != "" {
+		dir = d
+	}
 	path := filepath.Join(dir, "settings.json")
+	// Copilot CLI's own multi-provider file (BYOK): $COPILOT_PROVIDERS_CONFIG,
+	// else providers.json beside settings.json. It needs no GitHub sign-in.
+	provs := filepath.Join(dir, "providers.json")
+	if p := appdir.Getenv("COPILOT_PROVIDERS_CONFIG"); p != "" {
+		provs = p
+	}
+	own := func() []Option {
+		// "auto" is Copilot's own choice, not a model it lists; the rest
+		// come from the list magpie last fetched from Copilot.
+		out := []Option{{Value: "auto", Note: "let Copilot pick", Icon: "githubcopilot"}}
+		if live, _, ok := catalog.Live("copilot"); ok {
+			// magpie's list has Auto too, offered above
+			live = slices.DeleteFunc(slices.Clone(live), func(m catalog.Model) bool { return m.ID == "auto" })
+			out = append(out, options(live, "")...)
+		}
+		return out
+	}
 	return &Agent{
 		ID: "copilot", Name: "Copilot CLI", Icon: "githubcopilot", Aliases: []string{"gh-copilot"},
 		UA:  []string{"copilot", "github-copilot"},
@@ -1629,20 +1710,37 @@ func copilot(home string) *Agent {
 		// PATH, and running it only asks for the CLI to be installed
 		// (#3269): a command of the editor's is not the CLI
 		binNot: editorLauncher,
+		// magpie/<model> is a model of the provider named magpie in providers.json
+		Spelled:  prefixed,
+		ListOnly: true,
+		Check: func() string {
+			if v, _ := edit.GetJSON(path, "model"); !prefixed(v) {
+				return ""
+			}
+			p := copilotProvider(provs)
+			return wiringOff("Copilot CLI", provs, func(k string) (string, bool) { v, ok := p[k].(string); return v, ok },
+				"baseUrl", gateway.URL()+"/v1", "apiKey", agentKey("copilot"))
+		},
+		Sync: func() error { return copilotSync(provs, gateway.URL()+"/v1", agentKey("copilot")) },
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: jsonGet(path, "model"),
-			Set: jsonSet(path, "model"),
-			Options: func(map[string]string) []Option {
-				// "auto" is Copilot's own choice, not a model it lists; the rest
-				// come from the list magpie last fetched from Copilot.
-				out := []Option{{Value: "auto", Note: "let Copilot pick", Icon: "githubcopilot"}}
-				if live, _, ok := catalog.Live("copilot"); ok {
-					// magpie's list has Auto too, offered above
-					live = slices.DeleteFunc(slices.Clone(live), func(m catalog.Model) bool { return m.ID == "auto" })
-					out = append(out, options(live, "")...)
+			Set: func(v string) error {
+				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+					if err := copilotWrite(provs, gateway.URL()+"/v1", agentKey("copilot")); err != nil {
+						return err
+					}
 				}
-				return out
+				if v == "" {
+					if err := edit.DelJSON(path, "model"); err != nil {
+						return err
+					}
+					return copilotUnwrite(provs)
+				}
+				return edit.SetJSON(path, edit.KV{Path: "model", Value: v})
+			},
+			Options: func(cur map[string]string) []Option {
+				return withVia(own(), "copilot", magpieID+"/")
 			},
 		}, {
 			// effortLevel, which Copilot saves beside the model and clears

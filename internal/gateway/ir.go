@@ -178,6 +178,10 @@ type Request struct {
 	// leanPrompt has the Claude bridge give the caller's instructions as
 	// the run's system prompt, in place of Claude Code's (ClaudeLeanPrompt).
 	leanPrompt bool
+	// appendPrompt: the Claude bridge gives the caller's instructions
+	// after Claude Code's own system prompt (appendsPrompt), set as the
+	// run starts.
+	appendPrompt bool
 	// envElsewhere: the caller's instructions name a working directory the
 	// Claude bridge's run is not in (a client on another computer, or in
 	// Windows with Claude Code in WSL), so the run's own prompt describes
@@ -215,6 +219,10 @@ type Request struct {
 	// replayed: the run started was given the conversation as a
 	// transcript (replaySession)
 	replayed bool
+	// interactive, for the Claude bridge, is that the run answering this
+	// request is Claude Code's interactive mode, not claude -p: what a
+	// refusal it ends in is told with (thirdPartyRefused, #4503)
+	interactive bool
 	// hourMarks has the cache marks magpie adds on Anthropic's Messages
 	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
 	// turns are often more than five minutes apart and whose own vendor
@@ -249,7 +257,12 @@ type Request struct {
 	ThinkOff  bool
 	Parallel  *bool // parallel tool calls allowed
 	WebSearch bool  // the client offered its provider's own web search
-	Fast      bool  // the client asked for priority processing: service_tier priority (Codex's Fast mode)
+	// WebAccess is the external_web_access of the client's web_search
+	// tool, as it sent it: Codex's web_search mode (false for "cached",
+	// true for "live"), which magpie's own search for a model that can't
+	// is made in (withWebAccess, #5018)
+	WebAccess json.RawMessage
+	Fast      bool // the client asked for priority processing: service_tier priority (Codex's Fast mode)
 	// Ultrafast is Codex's Ultrafast (service_tier "ultrafast"), which a
 	// ChatGPT account on a plan with it offers on its models; Fast is set
 	// with it, so where there is no Ultrafast the request goes fast

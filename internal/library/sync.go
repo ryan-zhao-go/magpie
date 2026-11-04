@@ -120,6 +120,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	// link to what is there already
 	shared := realDir(sharedSkillsDir())
 	steps = append(steps, func(l *Library) { l.sweepShared(append(slices.Clone(all), gone...), res) })
+	steps = append(steps, func(l *Library) { l.syncShared(all, res) })
 	for _, first := range []bool{true, false} {
 		for _, t := range all {
 			switch {
@@ -132,6 +133,8 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			}
 		}
 	}
+	// magpie's copies in a WSL distro no agent there is linked to any more
+	steps = append(steps, func(l *Library) { l.sweepWSLStores(append(slices.Clone(all), gone...), res) })
 	return append(steps, func(l *Library) { l.syncProjects(res) })
 }
 
@@ -472,6 +475,8 @@ type SkillView struct {
 	// OffHere is set when it is turned off on this computer alone: Agents
 	// are still the ones a sync carries to the others
 	OffHere bool `json:"offHere,omitempty"`
+	// Note is the user's own note on it (Skill.Note)
+	Note string `json:"note,omitempty"`
 }
 
 // View is the Library page.
@@ -498,6 +503,10 @@ type View struct {
 	Backups      string            `json:"backups"`
 	SkillGroups  []SkillGroup      `json:"skillGroups"`
 	CopySkills   bool              `json:"copySkills"` // the library gives skills as copies (#896)
+	// SharedSkills: every skill on here is in ~/.agents/skills too
+	// (skills_shared.go), at SharedDir
+	SharedSkills bool   `json:"sharedSkills"`
+	SharedDir    string `json:"sharedDir"`
 	// MCPHub: the agents are given magpie's one MCP server in place of
 	// the library's (#2679), at HubPath<agent> on the gateway
 	MCPHub  bool   `json:"mcpHub"`
@@ -569,7 +578,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	// the agents are found once for the whole read: finding them looks
 	// through every agent's folders, in WSL too (#1624)
 	targets, asleep := targetsAsleep(false)
-	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, MCPHub: l.MCPHub, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), Partial: glance}
+	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), MCPHub: l.MCPHub, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), Partial: glance}
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
 			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID),
@@ -660,7 +669,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	v.Subagents, v.SubagentAgents = l.subagentsView(targets, asleep, of)
 	tr := &tracer{}
 	for _, s := range l.Skills {
-		sv := SkillView{Name: s.Name, Agents: append([]string{}, s.Agents...), Icon: skillIcon(s), Problems: of("skill:" + s.Name), Repo: tr.repoOf(s), OffHere: s.OffHere}
+		sv := SkillView{Name: s.Name, Agents: append([]string{}, s.Agents...), Icon: skillIcon(s), Problems: of("skill:" + s.Name), Repo: tr.repoOf(s), OffHere: s.OffHere, Note: s.Note}
 		if s.Source != nil {
 			sv.Source, sv.Kind = s.Source.String(), s.Source.Kind
 		}
@@ -675,10 +684,15 @@ func readView(problems []Problem, glance bool) (*View, error) {
 		} else if _, err := os.Lstat(p); err == nil && sv.Kind == "folder" {
 			sv.Kind, sv.Source = "", ""
 		}
-		if sv.Shared = sharedEntry(s.Name); sv.Shared != "" {
+		// kept in ~/.agents/skills by the user, or put there by the
+		// setting: every agent reading that folder has it
+		sv.Shared = sharedEntry(s.Name)
+		if sv.Shared != "" {
 			sv.SharedElsewhere = !within(realDir(skillDir(s.Name)), realDir(sharedSkillsDir()))
+		}
+		if sv.Shared != "" || l.inSharedHere(s) {
 			for _, t := range targets {
-				if t.Skills != "" && (slices.Contains(readsShared, t.Agent.ID) || realDir(t.Skills) == realDir(sharedSkillsDir())) {
+				if t.Skills != "" && (t.readsSharedDir() || realDir(t.Skills) == realDir(sharedSkillsDir())) {
 					sv.Always = append(sv.Always, t.Agent.ID)
 				}
 			}

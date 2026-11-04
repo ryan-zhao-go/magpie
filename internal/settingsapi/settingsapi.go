@@ -45,7 +45,7 @@ var Keys = []string{
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
 	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin",
 	// models: replies, vision, images, search
-	"memberModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries",
+	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries",
 	"vision", "visionEffort", "imageGen", "imageTimeout", "classifyTimeout",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
 	// updates
@@ -67,6 +67,7 @@ var Choices = map[string][]string{
 	"updateChannel":  {settings.UpdateStable},
 	"updateEvery":    ints(settings.UpdateEveries),
 	"searchFirst":    {settings.SearchFirstModel, settings.SearchFirstAPI},
+	"replyModel":     settings.ReplyModels,
 }
 
 func ints(v []int) []string {
@@ -219,11 +220,27 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["quitNoAsk"]; !sent {
 		in.QuitNoAsk = cur.QuitNoAsk
 	}
+	// nor what a reply's model name says, which they sent as memberModel:
+	// a change of it is that, and else the name stays as it is (vendor
+	// too, which they can't show). memberModel itself is only ever
+	// written beside replyModel (settings' normal).
+	if _, sent := fields["replyModel"]; sent {
+		in.MemberModel = false
+	} else {
+		in.ReplyModel = cur.ReplyModel
+		if _, sent := fields["memberModel"]; sent && in.MemberModel != (cur.ReplyModel == settings.ReplyMember) {
+			in.ReplyModel = settings.ReplyAsked
+			if in.MemberModel {
+				in.ReplyModel = settings.ReplyMember
+			}
+		}
+		in.MemberModel = false
+	}
 	// nor whether a value masked for the first time is told (Must2333)
 	if _, sent := fields["maskAlert"]; !sent {
 		in.MaskAlert = cur.MaskAlert
 	}
-	in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
+	in.AgentOrder, in.AgentsHidden, in.AgentsShown, in.AgentsHere = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown, cur.AgentsHere
 	in.Window, in.WindowMaximised, in.WindowAt = cur.Window, cur.WindowMaximised, cur.WindowAt // the window's own, as it was last resized and moved
 	// and what other pages keep here: which models an agent is shown, and
 	// everything the user said of a model anywhere else in the app, set on

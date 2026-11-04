@@ -39,6 +39,11 @@ import (
 // auto-review on the session's own model.
 const CodexAutoReviewSession = "session"
 
+// CodexSubagentLead is CodexSubagentModel's value that puts every Codex
+// subagent on the model its lead's own turns go on, whatever the lead
+// names for it in spawn_agent.
+const CodexSubagentLead = "lead"
+
 // Settings is what the user chose. "" and "system" both mean "follow the OS".
 type Settings struct {
 	Theme string `json:"theme,omitempty"` // system | light | dark
@@ -352,16 +357,23 @@ type Settings struct {
 	// "<provider>|<display name>", which provider.adoptLegacyPluginCheckins
 	// carries over).
 	CheckinOff []string `json:"checkinOff,omitempty"`
-	// MemberModel has a reply's model name the routing group's member
-	// that answered, as magpie's provider/model id (workbuddy/glm-5.3-flash),
-	// for agents that count usage by the reply's model (#822). Off, as by
-	// default, a reply sent under another name than the one asked for (a
-	// group's member, a model's own id, a provider/model id) names the
-	// model the agent asked for (issennknight on Discord: an agent warned
-	// that deepseek-v4.1-flash came back as deepseek-v4.1-flash-1017);
-	// one the vendor named as asked keeps the vendor's name, a dated one
-	// too. Claude Code, Claude Desktop and Codex never get the member's
-	// id: they read the name themselves (gateway's replyNamingOf).
+	// ReplyModel is what a reply's model name says when the request went
+	// out under another name than the one asked for (a group's member, a
+	// model's own id, a provider/model id): "" the model the agent asked
+	// for (issennknight on Discord: an agent warned that
+	// deepseek-v4.1-flash came back as deepseek-v4.1-flash-1017), "member"
+	// magpie's provider/model id of the member that answered
+	// (workbuddy/glm-5.3-flash), for agents that count usage by it (#822),
+	// "vendor" the vendor's own text, as every reply said before the
+	// asked-for name (ZoeCats on Discord). One the vendor named as asked
+	// keeps the vendor's name, a dated one too. Each is for every agent,
+	// Claude Code, Claude Desktop and Codex included (gateway's
+	// replyNamingOf). A request's X-Magpie-Response-Model says it for
+	// that request alone. "asked" is read as "".
+	ReplyModel string `json:"replyModel,omitempty"`
+	// MemberModel is ReplyModel "member" as a magpie before ReplyModel
+	// kept it: read as that when ReplyModel isn't set, and written beside
+	// it for such a magpie (normal).
 	MemberModel bool `json:"memberModel,omitempty"`
 	// NoLoopGuard lets a streamed reply run on when its reasoning or text
 	// is stuck in a loop of the same few lines (#1359). Off, as by
@@ -687,7 +699,8 @@ type Settings struct {
 	// whatever model its lead asked for in spawn_agent: a model a ChatGPT
 	// account in magpie serves (provider/model), since a subagent's task
 	// is sealed for one (willz on Discord). "" leaves each on the model its
-	// lead asked for.
+	// lead asked for; CodexSubagentLead puts each on the model its lead's
+	// own turns go on, even when the lead names another.
 	CodexSubagentModel string `json:"codexSubagentModel,omitempty"`
 	// DesktopSubagentModel is the model the gateway puts Claude Desktop's
 	// subagent tool turns on. "" leaves them on the model their lead asks
@@ -757,6 +770,11 @@ type Settings struct {
 	AgentOrder   []string `json:"agentOrder,omitempty"`
 	AgentsHidden []string `json:"agentsHidden,omitempty"`
 	AgentsShown  []string `json:"agentsShown,omitempty"`
+	// AgentsHere are the agents, by id, whose picks (model, effort…) stay
+	// on this computer (chenxiang0010 on Discord), as an MCP server can:
+	// sync, a Restore and a backup file neither bring another computer's
+	// picks in for one nor take this computer's up. This computer's own.
+	AgentsHere []string `json:"agentsHere,omitempty"`
 	// UsageOrder is how the Usage page's cards are listed, by provider id,
 	// as they were dragged there; one it doesn't name follows in magpie's
 	// own order. Only the page's: the order providers are tried in is the
@@ -1060,6 +1078,16 @@ const AnyProvider = "*/"
 // at once.
 const UpdateStable = "stable"
 
+// What a reply's model name says (ReplyModel): the model asked for is "".
+const (
+	ReplyAsked  = "asked" // read as ""
+	ReplyMember = "member"
+	ReplyVendor = "vendor"
+)
+
+// ReplyModels are ReplyModel's values besides its default "".
+var ReplyModels = []string{ReplyMember, ReplyVendor}
+
 // anArticle is the article a word takes where a message names it, so that an
 // input price is not "a input price".
 func anArticle(word string) string {
@@ -1344,6 +1372,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
+	s.AgentsHere = cur.AgentsHere
 }
 
 // Wires is ModelWires with the provider's own id of each model the user
@@ -2059,6 +2088,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if math.IsNaN(s.BalanceAlert) || math.IsInf(s.BalanceAlert, 0) || s.BalanceAlert < 0 {
 		return fmt.Errorf("a balance alert is at an amount of 0 or more (0 for off), not %v", s.BalanceAlert)
 	}
+	if s.ReplyModel != "" && !slices.Contains(ReplyModels, s.ReplyModel) {
+		return fmt.Errorf("a reply's model names %q (the model asked for), %q or %q, not %q", ReplyAsked, ReplyMember, ReplyVendor, s.ReplyModel)
+	}
 	if s.QuotaReads != "" && s.QuotaReads != "asked" {
 		return fmt.Errorf(`allowances are read "" (whenever magpie needs them) or "asked" (only when asked), not %q`, s.QuotaReads)
 	}
@@ -2100,7 +2132,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return fmt.Errorf("the model for Codex's auto-review must be a model's id such as openai/gpt-5-mini, not %q", s.CodexAutoReview)
 	}
 	s.CodexSubagentModel = strings.TrimSpace(s.CodexSubagentModel)
-	if s.CodexSubagentModel != "" && !strings.Contains(s.CodexSubagentModel, "/") {
+	if s.CodexSubagentModel != "" && s.CodexSubagentModel != CodexSubagentLead && !strings.Contains(s.CodexSubagentModel, "/") {
 		return fmt.Errorf("the model for Codex's subagents must be a model's id such as codex/gpt-5.5, not %q", s.CodexSubagentModel)
 	}
 	s.RedactRouteTo = strings.TrimSpace(s.RedactRouteTo)
@@ -2150,6 +2182,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return err
 	}
 	s.AgentOrder, s.AgentsHidden, s.AgentsShown = ids(s.AgentOrder), ids(s.AgentsHidden), ids(s.AgentsShown)
+	s.AgentsHere = ids(s.AgentsHere)
 	s.UsageOrder = ids(s.UsageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
@@ -2305,6 +2338,18 @@ func (s Settings) normal() Settings {
 			*w.at = (*w.ats)[0]
 		}
 	}
+	// a reply's model name: memberModel, as a magpie before replyModel
+	// kept it, when replyModel isn't set, and kept beside it for that
+	// magpie
+	switch s.ReplyModel {
+	case "":
+		if s.MemberModel {
+			s.ReplyModel = ReplyMember
+		}
+	case ReplyAsked:
+		s.ReplyModel = ""
+	}
+	s.MemberModel = s.ReplyModel == ReplyMember
 	// an account's own, by its name in lower case; one with none follows
 	// CodexWarmAt and isn't kept
 	if s.CodexWarmAtOf != nil {

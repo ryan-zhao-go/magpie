@@ -23,8 +23,9 @@ package provider
 // sign-in follows the gateway it stays that: once it is no longer low
 // (backShare) the agent is signed back in to it, as Smart gives it
 // requests again then (#408). Where the sign-in alone spends the accounts
-// (returnsToFirst), the agent stays on the one it moved to till that is
-// spent too. A switch the user makes meanwhile ends that. With KeepLogin on the subscription, the agent
+// (returnsToFirst), or the gateway itself stays on the next (Until used
+// up), the agent stays on the one it moved to till that is spent too. A
+// switch the user makes meanwhile ends that. With KeepLogin on the subscription, the agent
 // stays signed in to the first, whatever it has left (#524); with
 // KeepLoginAs, to that account, wherever it stands in the order. Not while
 // magpie only switches the sign-in (SwitchOnly): moving it is then all
@@ -149,13 +150,17 @@ func loginSwitching(agent string) (share float64, keep bool) {
 // alone magpie switches (SwitchOnly) — going back at the first's reset
 // left the account moved to part used and started the first's next
 // window early, which is not "use one up, then the next" (hxy920830 on
-// X): there it stays, unless the user said the first comes first.
+// X): there it stays, unless the user said the first comes first. Nor
+// does Codex's go back when it is routed Until used up: the gateway then
+// keeps its requests on the account it moved to (routes.Drain), so Codex
+// signed back in to the first showed that one in use while the other's
+// allowance was spent (WalterAIBuilder on X); it stays with the requests.
 func returnsToFirst(agent string) bool {
 	for _, p := range storedFile().Providers {
 		if p.ID == agent {
 			// kept on the first (KeepLogin), set aside under SwitchOnly,
 			// is still the user's word that the first comes first
-			return p.Routing == Ordered || p.KeepLogin || agent == "codex" && !p.SwitchOnly
+			return p.Routing == Ordered || p.KeepLogin || agent == "codex" && !p.SwitchOnly && p.Routing != Drain
 		}
 	}
 	return agent == "codex"
@@ -464,7 +469,7 @@ func SwitchWhenSpent(ctx context.Context, agent string) (string, error) {
 	}
 	// the first moved off, not one moved to on the way
 	r, _ := loginReturnOf(agent, from)
-	if err := switchLogin(agent, to); err != nil {
+	if err := switchLoginBy(agent, to, true); err != nil {
 		return "", err
 	}
 	if back {
@@ -483,12 +488,18 @@ func SwitchWhenSpent(ctx context.Context, agent string) (string, error) {
 		share, _ := loginSwitching(agent)
 		log.Printf("%s: %s has used %g%% or more of its allowance; signed it in to %s", agent, from, share, to)
 		if agent == "codex" {
-			codexAppSpentSwitch()
+			codexAppSwitched(true, true)
 		}
 	}
 	if agent == "codex" {
 		if was := CodexAppStale(); was != "" {
-			log.Printf("codex: the Codex app is still signed in to %s, and shows its limits, until its app-server is restarted once no Codex turn runs", was)
+			// a switch off a spent account restarts it either way: left on
+			// that account, the app greys Send for every model
+			if codexRestartsApp() || !back {
+				log.Printf("codex: the Codex app is still signed in to %s, and shows its limits, until its app-server is restarted once no Codex turn runs", was)
+			} else {
+				log.Printf("codex: the Codex app is still signed in to %s, and shows its limits, until it is restarted: magpie restarts it for a switch back only with \"Restart the Codex app to follow\" on", was)
+			}
 		}
 	}
 	// the models the agent is offered are the new account's plan's

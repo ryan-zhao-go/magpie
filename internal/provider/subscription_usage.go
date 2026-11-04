@@ -1105,9 +1105,11 @@ type codexUsage struct {
 	RateLimit struct {
 		// false once its allowance is used up; held only with no credits
 		// to go on with (codexHeld)
-		Allowed   *bool        `json:"allowed"`
-		Primary   *codexWindow `json:"primary_window"`
-		Secondary *codexWindow `json:"secondary_window"`
+		Allowed *bool `json:"allowed"`
+		// the backend's own word that a limit is hit
+		LimitReached *bool        `json:"limit_reached"`
+		Primary      *codexWindow `json:"primary_window"`
+		Secondary    *codexWindow `json:"secondary_window"`
 	} `json:"rate_limit"`
 	SpendControl *struct {
 		Reached bool `json:"reached"`
@@ -1163,7 +1165,7 @@ var codexReservePlans = []string{"team", "self_serve_business_prolite"}
 // says held: wrongly held costs the app its ChatGPT extras while magpie
 // serves the turn, wrongly not held leaves it sending nothing at all.
 func codexHeld(u codexUsage) bool {
-	if u.RateLimit.Allowed == nil || *u.RateLimit.Allowed {
+	if !codexAtLimit(u) {
 		return false
 	}
 	c := u.Credits
@@ -1178,6 +1180,28 @@ func codexHeld(u codexUsage) bool {
 		return false
 	}
 	return true
+}
+
+// codexAtLimit is whether the reading says the allowance is used up as
+// the Codex app's composer reads it: rate_limit.allowed false, and that
+// alone. Not said is not at the limit, and neither is allowed true with a
+// window at 100%: the app's gate returns open on anything but allowed
+// false (ChatGPT.app 26.1029.61003, the macOS build of the version
+// xiaoq6285 runs on Windows, async chunk "a6kU": search
+// "n.rate_limit?.allowed!==!1||"; the same in OpenAI.Codex 26.1027 on the
+// Windows box and in 26.1021), and its remaining-percent reading keeps a
+// window of an allowed account at 1% or more (search
+// "Math.max(100-e,+(!0===t))"), so to the app such an account still has
+// room. Holding it would take the app out of ChatGPT (durable threads,
+// remote control, its usage meter, #996) for no Send it would grey.
+//
+// A used-up 5h window with the week open is held through allowed: the
+// backend says allowed false and limit_reached true there (the real Team
+// reply in testdata, 5h at 100% and the week at 63%), which is what
+// greys the app's Send.
+func codexAtLimit(u codexUsage) bool {
+	a := u.RateLimit.Allowed
+	return a != nil && !*a
 }
 
 type codexWindow struct {

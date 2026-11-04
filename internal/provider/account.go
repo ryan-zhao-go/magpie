@@ -219,6 +219,9 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 		return errAccountDiscoveryOff
 	}
 	ctx = p.Via(ctx) // a sign-in refreshed on the way goes through its proxy
+	// the agent's own headers the provider lists (PassHeaders), before an
+	// account's signing, which has the last word on its own
+	passed := p.passClientHeaders(ctx, req.Header)
 	if p.Account != nil && p.Account.sign != nil {
 		return p.Account.sign(ctx, req, body)
 	}
@@ -249,6 +252,9 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 	// ${sessionId} and ${threadId} in a value are the conversation's
 	// (conversation.go).
 	for k, v := range p.SentHeaders(ctx) {
+		if slices.ContainsFunc(passed, func(n string) bool { return strings.EqualFold(n, k) }) {
+			continue // the agent sent its own, which stands over the user's fixed one
+		}
 		if ListHeader(k) {
 			MergeList(req.Header, k, v)
 			continue
@@ -1784,6 +1790,14 @@ func copilotModels(ctx context.Context, app copilotApp) ([]catalog.Model, error)
 	}
 	copilotSeenMu.Unlock()
 	for _, m := range v.Data {
+		if copilotDrawsModel(m.Capabilities.Type, m.ID) && !copilotInternal.MatchString(m.ID) {
+			// an image model (GPT Image 2.5 Flare in Copilot CLI): drawn at
+			// the account's /images API, never offered to an agent's chat
+			if m.Policy == nil || m.Policy.State == "enabled" {
+				out = append(out, catalog.Model{ID: m.ID, Name: m.Name, Draws: true})
+			}
+			continue
+		}
 		if m.Capabilities.Type != "chat" || copilotInternal.MatchString(m.ID) {
 			continue
 		}
@@ -1842,4 +1856,17 @@ func forgetClaudeStatus() {
 	claudeStatusGen++
 	claudeStatusBusy = false
 	claudeStatusMu.Unlock()
+}
+
+// copilotDrawsModel is whether a /models entry of capabilities.type typ is
+// an image model: Copilot types it for images, or it isn't a chat, embedding
+// or other known type and its id names images.
+func copilotDrawsModel(typ, id string) bool {
+	switch strings.ToLower(typ) {
+	case "image", "images", "image_generation", "image-generation":
+		return true
+	case "chat", "embeddings", "embedding", "completion", "completions":
+		return false
+	}
+	return catalog.DrawsID(id)
 }

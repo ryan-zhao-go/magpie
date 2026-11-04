@@ -642,7 +642,7 @@ name. The groups' own New group has the plus too. No left-border accent.
 `name-suffix-where-named.test.cjs` checks the setting that says whether a
 provider's name or "· routing group" follows a name in the agents' lists (#868)
 where names are given, in Chromium and WebKit, English and Chinese. The
-provider editor's Names & levels has its three choices and says what the lists
+provider editor's Names, prices & levels has its three choices and says what the lists
 show. For the groups it is one setting for all of them, so it sits over the
 groups on Routing (PAMI on Discord: in one group's editor it read as that
 group's): a group's editor has no choices, only what its group will be called
@@ -1442,6 +1442,21 @@ found skill with a byte copy in another agent shows both agents' icons and
 no "differs in"; one that really differs still says so. Chromium and
 WebKit, in English and Chinese, with `/api/plugins` faked.
 
+`library-problems-hide.test.cjs` opens the Library with Grok Build's
+AGENTS.md failing to stat at every sync (Zachary-wW, #3745), the API
+answering as `library.go` does, the error texts as magpie's own sync gave
+them in a sandbox. The card's × hides what it lists on every tab, sends
+nothing and moves no view; a read, and in the window an Instructions
+change and a chip's change that fail only on what was hidden, keep it
+hidden, the toast still naming the failure, and so does the same failure
+under a temp file named anew at each write. A failure not hidden, one whose item was written in
+between, or one after none stood brings the card back with all it lists.
+An agent's own skills stay, under their own title, with no ×, and the
+keyboard's focus goes to the card's next button or the tab open. The × is
+named and inside the card in English, Chinese (both), Japanese and German,
+in a browser at 980, 440 and 320px (44px wide on a phone) and in the
+window at 980 and 560px, the title's words whole. Chromium and WebKit.
+
 `model-pick.test.cjs` picks Claude Code's model with the Agents page
 scrolled while a faked `/api/set` takes 2.5s to answer: the row shows the
 new model at once, in the window and in the tray panel's opened row and its
@@ -1490,7 +1505,7 @@ Chromium and WebKit, English and Chinese: Detect APIs' "Each picked model"
 posts provider/detect with every model picked (detectModels) and shows model
 by API, each a ✓ with the time or a ✗ with why; "Use these" sets the URLs
 that answered and gives each model that answered on one API only that API in
-Names & levels, unsaved, sending nothing until the Save carries them as
+Names, prices & levels, unsaved, sending nothing until the Save carries them as
 modelPrefs, while a model answering on two stays Auto. A chip's right-click
 Test says the API it was asked on ("answered via Responses"). No click moves
 the page, nothing has a left-border accent, and every string has its

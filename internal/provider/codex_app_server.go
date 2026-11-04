@@ -266,6 +266,9 @@ var codexApp struct {
 	// switched: Codex's ChatGPT account changed since the app-servers were
 	// last listed (codexAppAccountSwitched)
 	switched bool
+	// auto: every switch since then magpie made by itself
+	// (SwitchWhenSpent), none the user made
+	auto bool
 	// spent: the app-servers are on an account used up, so a turn they
 	// left open can't be served by them any more: Codex was switched off
 	// it (SwitchWhenSpent, or by hand off one known held, noteCodexSwitch),
@@ -307,21 +310,23 @@ func CodexAppStuck() bool {
 // one, listed ahead of the app's on the owner's Mac) or none when ps was
 // slow, and then nothing was ended and the app stayed grey on the used-up
 // account till the user restarted it (danzi002 on Discord).
-func codexAppAccountSwitched() {
-	c := &codexApp
-	c.Lock()
-	defer c.Unlock()
-	c.switched = true
-}
+func codexAppAccountSwitched() { codexAppSwitched(false, false) }
 
 // codexAppSpentSwitch is codexAppAccountSwitched for a switch off an
 // account that was used up: a turn the app-server left open is restarted
 // past too once it has gone quiet (codexTurnStuckAfter).
-func codexAppSpentSwitch() {
+func codexAppSpentSwitch() { codexAppSwitched(true, false) }
+
+// codexAppSwitched notes a switch of Codex's account: spent, off one used
+// up; byMagpie, made by magpie itself (SwitchWhenSpent). magpie's switch
+// back restarts the app only with RestartApp on; its switch off a spent
+// account, and one the user made among them, restart it all the same.
+func codexAppSwitched(spent, byMagpie bool) {
 	c := &codexApp
 	c.Lock()
 	defer c.Unlock()
-	c.switched, c.spent = true, true
+	c.auto = byMagpie && (!c.switched || c.auto)
+	c.switched, c.spent = true, c.spent || spent
 }
 
 // KeepCodexAppOnItsProvider runs codexAppStep every codexAppEvery till
@@ -377,6 +382,30 @@ func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Tim
 	// quota ran out mid-turn would hold their restart, and the app's grey
 	// Send, for up to codexTurnWindow (xiaoq6285 on Discord)
 	into := changed && out && (!c.seen || !c.out)
+	// what changed magpie changed by itself and the app works without:
+	// the switch back once the account has room, and the takeover out at
+	// the reset. The ChatGPT app shows the end of its app-server as an
+	// error and relaunches (#4550), so that waits for the user to restart
+	// it unless they asked magpie to (RestartApp; atom0964 on Discord: both
+	// of Codex's sign-in ticks off, and magpie still restarted the app to
+	// switch accounts). A switch the user made, a Connect or a Disconnect
+	// is theirs, and restarts it. So does whatever leaves the app-server on
+	// a used-up account: the takeover in, the first look on one and a
+	// switch off one. The app greys Send for every model while that
+	// account's rate limit says not allowed and reads the account only as
+	// its app-server starts (8b0132b3d), so nothing magpie serves would
+	// reach it until a restart.
+	byHand := c.switched && !c.auto || c.seen && c.route != route && c.out == out
+	needed := into || c.switched && c.spent
+	if changed && !byHand && !needed && !codexRestartsApp() {
+		why := "magpie switched Codex's ChatGPT account back"
+		if !c.switched {
+			why = "magpie gave Codex back its ChatGPT account after the reset"
+		}
+		log.Printf("codex: %s; the Codex app's app-server is left running (Restart the Codex app to follow is off), and the app follows once it is restarted", why)
+		c.switched, c.auto = false, false
+		changed = false
+	}
 	if !changed {
 		c.seen, c.route, c.out = true, route, out
 	}
@@ -400,7 +429,7 @@ func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Tim
 			c.why = "where Codex's config sends it changed"
 		}
 		c.spent = c.spent || into
-		c.seen, c.route, c.out, c.switched = true, route, out, false
+		c.seen, c.route, c.out, c.switched, c.auto = true, route, out, false, false
 		c.stale, c.stuck = map[int]int{}, false
 		for _, p := range pids {
 			c.stale[p] = 0
