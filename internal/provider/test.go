@@ -63,7 +63,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 			return []Result{{Protocol: proto, Error: zenPublicNone}}
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		ctx, b := q.tested(ctx, asClient(client, proto, body))
+		ctx, b := q.tested(ctx, url, asClient(client, proto, body))
 		return []Result{probe(ctx, q, proto, url, b, model, testWait)}
 	}
 	if p.isClaudeAccount() {
@@ -92,7 +92,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 			continue
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		ctx, b := q.tested(ctx, body)
+		ctx, b := q.tested(ctx, url, body)
 		out = append(out, probe(ctx, q, proto, url, b, model, testWait))
 	}
 	if len(out) == 0 && p.zenPublic() {
@@ -112,6 +112,13 @@ func (p Provider) Test(ctx context.Context) []Result {
 // tiny is the smallest request for model on proto's endpoint, streamed
 // to a backend that only streams.
 func tiny(q Provider, proto Protocol, model string) (url, body string) {
+	if kind := retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
+		// an embedding or rerank model chats nowhere: it is asked where
+		// the gateway sends it (retrieve), the OpenAI-style base's
+		// /embeddings or /rerank (heatonz on Discord: a relay serving
+		// only those detected nothing, asked on /chat/completions)
+		return tinyRetrieval(q.OpenAIBase(), kind, model)
+	}
 	url, body = tinyBody(q, proto, model)
 	if q.Account != nil && q.Account.Stream && body != "" {
 		body = strings.TrimSuffix(body, "}") + `,"stream":true}`
@@ -123,6 +130,26 @@ func tiny(q Provider, proto Protocol, model string) (url, body string) {
 		body = clineProbe(body)
 	}
 	return url, body
+}
+
+// retrievalOf is the retrieval API model is made for, as its id says
+// (catalog.ServesOf): embeddings or rerank, else "".
+func retrievalOf(model string) string {
+	switch s := catalog.ServesOf(model); s {
+	case catalog.ServesEmbedding, catalog.ServesRerank:
+		return s
+	}
+	return ""
+}
+
+// tinyRetrieval is the smallest request for a model of kind's at an
+// OpenAI-style base: one input to embed, or one document to rank.
+func tinyRetrieval(base, kind, model string) (url, body string) {
+	base = strings.TrimRight(base, "/")
+	if kind == catalog.ServesRerank {
+		return base + "/rerank", fmt.Sprintf(`{"model":%q,"query":"hi","documents":["hi"]}`, model)
+	}
+	return base + "/embeddings", fmt.Sprintf(`{"model":%q,"input":"hi"}`, model)
 }
 
 // clineProbe is the smallest request asked as Cline's own clients ask:
@@ -307,6 +334,13 @@ func (p Provider) drawsOnImages(model string) bool {
 	return p.Account == nil && p.Chat != "" && catalog.ImagesAPI(model)
 }
 
+// chatGPTDraws is whether model is one of the GPT Image family a ChatGPT
+// account draws with at its Codex backend's images API (the gateway's
+// drawsCodex and drawsFamily): the backend takes any gpt-image-* name.
+func (p Provider) chatGPTDraws(model string) bool {
+	return p.Account != nil && p.Account.Agent == "codex" && p.Base(Responses) != "" && strings.HasPrefix(model, "gpt-image-")
+}
+
 // tinyDrawing is the smallest images request for model: one picture of
 // next to nothing, at the lowest quality gpt-image offers, at the size
 // the vendor draws by default (the smallest one takes differs by model).
@@ -376,6 +410,15 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	if p.isClaudeAccount() {
 		return p.testClaude(ctx, model)
 	}
+	if client == "" && p.chatGPTDraws(model) {
+		// a ChatGPT account's GPT Image draws on its Codex backend's images
+		// API, as the gateway draws it (drawImages): asked as a chat on
+		// /responses it is refused, "The 'gpt-image-2.5' model is not
+		// supported when using Codex with a ChatGPT account" (ChangQiu on
+		// Discord)
+		b, _ := json.Marshal(map[string]any{"model": model, "prompt": "a dot", "n": 1, "quality": "low"})
+		return probe(ctx, p, Chat, strings.TrimRight(p.Base(Responses), "/")+"/images/generations", b, model, drawWait)
+	}
 	if p.testsTranslated() || client == "" && p.pluginTranslated(model) {
 		return p.testTranslated(ctx, model)
 	}
@@ -397,6 +440,10 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		// on the API that agent's requests go to (TestAs)
 		proto = clientProto(client, protos)
 	} else if draws {
+		proto = Chat
+	} else if retrievalOf(model) != "" && slices.Contains(protos, Chat) {
+		// an embedding or rerank model, at the OpenAI-style base's
+		// /embeddings or /rerank, where the gateway sends it (tiny)
 		proto = Chat
 	} else if apis := p.APIs(model); apis != nil {
 		if i := slices.IndexFunc(protos, func(pr Protocol) bool { return slices.Contains(apis, pr) }); i >= 0 {
@@ -422,7 +469,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		r := probe(ctx, q, proto, url, []byte(body), model, drawWait)
 		if !r.OK && ((r.Status == 404 || r.Status == 405) && HostOf(q.Chat) != "openrouter.ai" || r.Status == 400 && catalog.PointsToChat(r.Error)) {
 			url, body := tiny(q, proto, model)
-			ctx, b := q.tested(ctx, body)
+			ctx, b := q.tested(ctx, url, body)
 			if c := probe(ctx, q, proto, url, b, model, testWait); c.OK {
 				return c
 			}
@@ -440,7 +487,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 			return d
 		}
 	}
-	if !r.OK && r.otherAPI && client != ClientClaudeCode {
+	if !r.OK && r.otherAPI && client != ClientClaudeCode && retrievalOf(model) == "" {
 		// the vendor's word that the model isn't served on that API: it
 		// is asked on the next one that may serve it, as the gateway asks
 		// a request there (usable), and that one's answer is the model's
@@ -492,7 +539,7 @@ func (p Provider) testOn(ctx context.Context, client string, proto Protocol, mod
 	if client != "" {
 		body = asClient(client, proto, body)
 	}
-	ctx, b := p.tested(ctx, body)
+	ctx, b := p.tested(ctx, url, body)
 	return probe(ctx, p, proto, url, b, model, testWait)
 }
 
@@ -564,6 +611,16 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
 				if !p.DecidesModel(m.ID) && !off(p.ID, m.ID) && want(m.ID) && (k.Key == "" || p.Serves(k, m.ID)) {
 					return m.ID
 				}
+			}
+		}
+	}
+	if proto == Chat && q.Account == nil && !public {
+		// none to chat with: an embedding or rerank model its list
+		// keeps apart (catalog.LiveServing), asked where the gateway
+		// sends it (heatonz on Discord: a provider serving only those)
+		for _, m := range catalog.LiveServing(p.ID, "") {
+			if retrievalOf(m.ID) != "" && !off(p.ID, m.ID) && (k.Key == "" || p.Serves(k, m.ID)) {
+				return m.ID
 			}
 		}
 	}
@@ -709,6 +766,14 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 	if err := p.Sign(ctx, req, proto, body); err != nil {
 		r.Error = err.Error()
 		return r
+	}
+	if p.chatGPTDraws(model) && strings.HasSuffix(req.URL.Path, "/images/generations") {
+		// as the gateway asks it: the images API answers in JSON, not the
+		// stream Codex's signing asks of its Responses, with Codex CLI's
+		// own ids (codex-rs ext/image-generation)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("x-codex-imagegen-request-id", randomUUID())
+		req.Header.Set("x-codex-image-turn-id", randomUUID())
 	}
 	start := time.Now()
 	// each request sent, a retry's too, is a row; the last one carries
@@ -935,45 +1000,74 @@ var verifyLink = regexp.MustCompile(verifyAdvice + `: open (https://[^\s"\\]+) i
 
 // Verification says whether an error body is Google's refusal of an account
 // it wants verified first — Cloud Code Assist's 403 whose details say
-// VALIDATION_REQUIRED with a validation_url in their metadata (#152) — and
-// the https link to verify it at, when the body has one.
+// VALIDATION_REQUIRED (#152) — and the https link to verify it at, when the
+// body has one. The link is taken as Gemini CLI takes it
+// (classifyValidationRequiredError): the google.rpc.Help detail's link
+// first, past a "Learn more" one, then the ErrorInfo's validation_link,
+// then its validation_url.
 func Verification(b []byte) (link string, ok bool) {
 	var v struct {
 		Error struct {
 			Details []struct {
-				Reason   string            `json:"reason"`
-				Metadata map[string]string `json:"metadata"`
+				Reason   string         `json:"reason"`
+				Metadata map[string]any `json:"metadata"`
 				Links    []struct {
-					URL string `json:"url"`
+					Description string `json:"description"`
+					URL         string `json:"url"`
 				} `json:"links"` // google.rpc.Help
 			} `json:"details"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(b, &v) == nil {
-		help := ""
+	parsed := json.Unmarshal(b, &v) == nil
+	if parsed {
+		help, meta := "", ""
+		said := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 		for _, d := range v.Error.Details {
 			if d.Reason == "VALIDATION_REQUIRED" {
 				ok = true
-				link = cmp.Or(link, d.Metadata["validation_url"], d.Metadata["validationUrl"])
+				meta = cmp.Or(meta, said(d.Metadata, "validation_link"), said(d.Metadata, "validation_url"), said(d.Metadata, "validationUrl"))
 			}
 			for _, l := range d.Links {
-				help = cmp.Or(help, l.URL)
+				if !learnMore(l.Description, l.URL) {
+					help = cmp.Or(help, l.URL)
+				}
 			}
 		}
-		if ok && link == "" {
-			link = help
+		if ok {
+			link = cmp.Or(help, meta)
 		}
 	}
 	if !ok && !verifyWords.Match(b) {
 		return "", false
 	}
-	if m := verifyLink.FindSubmatch(b); link == "" && m != nil {
-		link = string(m[1]) // said already, by VerifyMessage
+	if link == "" {
+		// said already, by VerifyMessage: in the body's words, which a
+		// JSON error body holds escaped (& as \u0026, cut at the \ when
+		// read raw)
+		words := b
+		if parsed {
+			words = []byte(apiError(b, ""))
+		}
+		if m := verifyLink.FindSubmatch(words); m != nil {
+			link = string(m[1])
+		} else if m := verifyLink.FindSubmatch(b); m != nil {
+			link = string(m[1])
+		}
 	}
 	if u, err := url.Parse(link); err != nil || u.Scheme != "https" || u.Host == "" {
 		link = ""
 	}
 	return link, true
+}
+
+// learnMore is a google.rpc.Help link to Google's help on verifying, which
+// Gemini CLI tells from the link to verify at by its words or its host.
+func learnMore(desc, link string) bool {
+	if strings.EqualFold(strings.TrimSpace(desc), "learn more") {
+		return true
+	}
+	u, err := url.Parse(link)
+	return err == nil && u.Hostname() == "support.google.com"
 }
 
 // verifyAdvice marks a message VerifyMessage has already added to.

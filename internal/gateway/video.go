@@ -1024,7 +1024,10 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Model, call.Model = m, m
 	}
-	p, model, ok := provider.Resolve(f.Model)
+	p, model, ok := mediaGroupFirst(f.Model, provider.KindVideo)
+	if !ok {
+		p, model, ok = provider.Resolve(f.Model)
+	}
 	if !ok {
 		p, model, ok = bareVideomaker(f.Model)
 	}
@@ -1036,7 +1039,12 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		fail(404, fmt.Sprintf("magpie knows no model %q to make videos with", f.Model))
 		return
 	}
-	g, ms, isGroup := groupToMake(f.Model, p, model, provider.FindGroup)
+	g, ms, isGroup := mediaMembers(f.Model, provider.KindVideo)
+	if !isGroup {
+		g, ms, isGroup = groupToMake(f.Model, p, model, func(ref string) (provider.Group, []provider.Member, bool) {
+			return mediaMembers(ref, provider.KindVideo)
+		})
+	}
 	if isGroup {
 		r = heldByGroup(r, g) // held to the group's accounts, if it is
 	}
@@ -1063,7 +1071,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		if keyHeld {
 			keeps = groupKeeps(keyWho, g, ms)
 		}
-		t := s.drawingTries(g, ms, keeps)
+		t := s.drawingTries(g, ms, keeps, servesKind(provider.KindVideo))
 		if len(t) == 0 && keeps != nil {
 			fail(403, keyModelError(keyWho, f.Model))
 			return

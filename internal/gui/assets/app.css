@@ -2702,6 +2702,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .row.model .minfo .mi-img svg, .rt-gedit .fbrow .minfo .mi-img svg { display: block; }
 .provider .pswitch { margin-left: 8px; }
 .editor .off-note { grid-column: 1 / -1; }
+.editor .self-note label.tick { margin-top: 6px; }
 .uses { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
 .use {
   width: 26px; height: 26px; border-radius: 8px;
@@ -3315,8 +3316,12 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor input::placeholder, .acc input::placeholder { color: var(--faint); }
 .editor .pair { display: flex; gap: 8px; align-items: center; }
 .editor .pair input:first-child { flex: 1; }
-.editor .pair.bal-ask input { flex: 1; min-width: 0; }
+/* the method then the URL; where the column is narrow the URL takes a line of its own */
+.editor .pair.bal-ask { flex-wrap: wrap; }
+.editor .pair.bal-ask input { flex: 1 1 160px; min-width: 0; }
 .editor .pair.bal-ask .segs { flex: none; align-self: center; }
+.editor .bal-found { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.editor .bal-found span { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .editor .side { display: flex; gap: 4px; align-items: center; flex: none; min-width: 52px; justify-content: flex-end; }
 .editor .side .text { padding: 3px 6px; }
 .editor .headers .pair .side .text { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border-radius: 6px; }
@@ -4114,7 +4119,12 @@ body.panel .modal { padding: 16px 12px; }
 @keyframes content-in { from { opacity: .5; transform: translateY(2px); } }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* one run only: an endless animation at .01ms restarts every few
+     microseconds, so each frame catches a spinner at a random angle and it
+     flickers faster than ever, rather than standing still (_yukirock on X,
+     0.1.3036). One run ends at once on the base style, as the spinners
+     that declare `animation: none` here already do. */
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   /* what declares no transition of its own keeps none: its default is
      `all 0s`, which the rule above made `all .01ms`, so a header tab's
      label took a frame to come to its new size, the header was fitted to

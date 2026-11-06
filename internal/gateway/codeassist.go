@@ -341,7 +341,13 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	names := map[string]string{}
 	var contents []map[string]any
-	for _, m := range dropSecondAnswers(r.Messages) {
+	msgs := dropSecondAnswers(r.Messages)
+	if ag {
+		// a model turn that carried its call written out in the text goes
+		// as the answer it repeated (dropPseudoCalls)
+		msgs = dropPseudoCalls(msgs, r.Tools)
+	}
+	for _, m := range msgs {
 		role := "user"
 		if m.Role == "assistant" {
 			role = "model"
@@ -1367,7 +1373,10 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data))})
+		// at the status it names, Google's code: a 400 INVALID_ARGUMENT
+		// is the request's fault, never asked again nor the account's
+		// (sse_bare.go)
+		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data)), Status: namedStatus([]byte(data))})
 		return nil
 	}
 	c := ch.geminiChunk

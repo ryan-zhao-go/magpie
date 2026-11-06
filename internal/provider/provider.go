@@ -178,6 +178,12 @@ type Provider struct {
 	// used-up account (a switch off it, becoming its provider for it)
 	// restart it either way: the app greys Send there (8b0132b3d).
 	RestartApp bool `json:"restartApp,omitempty"`
+	// KeepSelf, on a Remote magpie that turned out to be this magpie
+	// (SelfAnswered), keeps it in routing anyway: left alone, such a
+	// provider is left out (SelfLeftOut). It is this computer's own, as
+	// sync's copy of the provider on the other computer points at a
+	// magpie that is not that one (hanslin1666 on Discord).
+	KeepSelf bool `json:"keepSelf,omitempty"`
 
 	// MaxConcurrency is how many requests may be out at the vendor at once
 	// on each of its keys or accounts (Discord, Lemon: a Codex account is
@@ -311,6 +317,12 @@ type Provider struct {
 	// OpenAI-only fields left out) fails. Off, the default, keeps that
 	// fitting, which a backend that isn't OpenAI's needs (#350).
 	CodexAsSent bool `json:"codexAsSent,omitempty"`
+
+	// ImageFilesOff, `image-files=off`, has DeepSeek's own API sent an
+	// agent's inline images inline on every turn. By default each goes up
+	// once through DeepSeek's Files API, for a day, and the turns name it
+	// by its file id (gateway's deepseek_files.go, #5407).
+	ImageFilesOff bool `json:"imageFilesOff,omitempty"`
 
 	// PromptAsWritten, on Antigravity's subscription, has the system prompt
 	// go to Google exactly as the agent wrote it. By default the few lines
@@ -859,8 +871,14 @@ func (p Provider) clone() Provider {
 // AllBuilt counts the times All built the list anew, for tests.
 var AllBuilt atomic.Int64
 
+// AllBuiltAt is when the build All last counted was asked for (allProviders
+// entered, the hold's rule read at once after), for a test to judge a build
+// by when it was asked, not by when the request that asked began (#2965).
+var AllBuiltAt atomic.Int64
+
 func allProviders() []Provider {
 	AllBuilt.Add(1)
+	AllBuiltAt.Store(time.Now().UnixNano())
 	f := load()
 	out, picks := ownOf(f)
 	for _, a := range Accounts() {
@@ -2250,9 +2268,10 @@ func (p Provider) Ready() bool {
 	return p.Account != nil || p.Key != "" || keyOptional(p)
 }
 
-// On is whether the provider takes requests: ready, not switched off and
-// not kept to its agent's own sign-in (KeptToAgent).
-func (p Provider) On() bool { return p.Ready() && !p.Off && !p.KeptToAgent() }
+// On is whether the provider takes requests: ready, not switched off,
+// not kept to its agent's own sign-in (KeptToAgent) and not a Remote
+// magpie that is this magpie (SelfLeftOut).
+func (p Provider) On() bool { return p.Ready() && !p.Off && !p.KeptToAgent() && !p.SelfLeftOut() }
 
 // KeptToAgent is whether the provider is Claude's subscription with
 // SwitchOnly on: its accounts are Claude Code's own sign-in alone, which
@@ -2282,12 +2301,12 @@ func SetOff(id string, off bool) error {
 func SwitchedOff(id string) (Provider, bool) {
 	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
 	if pid, _, ok := strings.Cut(id, "/"); ok {
-		if p, err := Find(pid); err == nil && (p.Off || p.KeptToAgent()) {
+		if p, err := Find(pid); err == nil && (p.Off || p.KeptToAgent() || p.SelfLeftOut()) {
 			return *p, true
 		}
 	}
 	for _, p := range All() {
-		if !p.Off && !p.KeptToAgent() || !p.Ready() {
+		if !p.Off && !p.KeptToAgent() && !p.SelfLeftOut() || !p.Ready() {
 			continue
 		}
 		if slices.ContainsFunc(p.Exposed(), func(m catalog.Model) bool { return m.ID == id }) {

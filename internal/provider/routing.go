@@ -9,6 +9,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -264,6 +265,10 @@ var usedCache struct {
 	// read: when each account's allowance was last read well, and whether
 	// the last try failed, by agent/user (UsageRead)
 	read map[string]readState
+	// heard: accounts no reading has told the windows of (it failed, was
+	// held, or named none) that a reply told them of, by agent/user
+	// (NoteCodexLimits): known from that until a reading tells them
+	heard map[string]heardOnly
 }
 
 // firstWait is how long a request waits for an agent's allowances the
@@ -306,6 +311,11 @@ type Limit struct {
 	// (Antigravity's "Gemini · 7 days"), which hold the account at its
 	// caps only (capLimits): routing goes on by the model's own window
 	pool []Limit
+	// aside is set on a window set aside for routing (QuotaWindow.Aside)
+	// that a cap the user set on it while it counted still holds the
+	// account at (WindowCaps.own); it rides in pool, never in the
+	// allowance itself
+	aside bool
 	// ResetRunsOut is when the reset the account spends by itself before
 	// it runs out does (resetRunsOut): spent then, it starts this window
 	// again — at Restarts, which routing takes for the window's renewal
@@ -796,6 +806,20 @@ func Allowances(agent string) map[string]Allowance {
 				}
 				c.seen[key] = reading{a, now}
 			}
+			// an account no reading told is known from what its replies
+			// said, until one does: else Smart and Use before expiry kept
+			// it, as not known, behind every account known, its week
+			// running out unspent (peterpark8527 on Discord)
+			for key, h := range c.heard {
+				if !strings.HasPrefix(key, agent+"/") {
+					continue
+				}
+				if slices.ContainsFunc(slices.Collect(maps.Keys(all)), func(u string) bool { return strings.EqualFold(u, h.user) }) {
+					delete(c.heard, key)
+				} else {
+					all[h.user] = h.a
+				}
+			}
 			if c.stale[agent] {
 				// kept, as weigh counts an account not known unused, but
 				// read again at the next ask
@@ -1135,6 +1159,19 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 			if i, ok := at[m.Model]; ok {
 				a[i].pool = append(a[i].pool, pl)
 			}
+		}
+	}
+	// a window set aside since the user capped it (WorkBuddy's "Credits"
+	// once the plan's and the extra credits are counted together, ferock
+	// on Discord) holds at that cap still: the user's value outlives the
+	// plugin's change of which window stops the account
+	for _, w := range ws {
+		if !w.Aside || w.Text || w.Model != "" || w.PoolWindow() {
+			continue
+		}
+		al := Limit{Used: w.Used, Span: w.Span, Name: w.Name, Resets: resets(w), aside: true}
+		for i := range a {
+			a[i].pool = append(a[i].pool, al)
 		}
 	}
 	return a

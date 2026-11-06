@@ -91,6 +91,10 @@ type subscriptionBridge struct {
 	// run for one goes in magpie's own folder until untrustedFor has
 	// passed (start)
 	untrusted sync.Map
+	// thirdParty are agents' system prompts (thirdPartyKey) Anthropic
+	// refused in the interactive mode as a third-party app's, and when:
+	// their turns run as claude -p until thirdPartyFor has passed (#4503)
+	thirdParty sync.Map
 }
 
 // untrustedFor is how long a caller's folder Claude Code asked to trust
@@ -907,11 +911,44 @@ func (b *subscriptionBridge) startTrusted(ctx context.Context, req *Request, mod
 		return run, events, err
 	}
 	// passed over from now on (passedOver): this run, and the next,
-	// aren't in the caller's folder
+	// aren't in the caller's folder. The conversation's session, kept
+	// (startRun), is gone on with there when it is magpie's folder's: a
+	// run started anew replayed the whole conversation once in each
+	// folder (sleepy_shibe on Discord)
 	b.untrusted.Store(untrusted.key, time.Now())
 	log.Printf("claude: Claude Code asks whether to trust %s, which its user hasn't; the run goes in magpie's own folder, told the caller's", untrusted.dir)
-	req.branch = nil
-	return b.startRun(ctx, req, model, configDir, owner, nil)
+	return b.startRun(ctx, req, model, configDir, owner, from)
+}
+
+// untrustedHere is whether a run in the caller's folder work goes in
+// magpie's own instead: in the interactive mode under the account Claude
+// Code is signed in to, Claude Code would ask whether to trust it, which
+// only the user answers. It is decided for each run as Claude Code
+// decides it (claudeTrusts), before the run, so a conversation whose
+// session is in magpie's folder goes on with it there instead of being
+// replayed in the caller's, asked about and replayed again in magpie's
+// every time passedOver's 10 minutes were up (sleepy_shibe on Discord),
+// and a folder the user trusts since is run in from the next turn on.
+// A folder Claude Code asked about lately all the same stays passed
+// over, as one is while the user's answers can't be read.
+func (b *subscriptionBridge) untrustedHere(req *Request, binary claudeCLI, configDir, work string) bool {
+	if b.passedOver(configDir, work) {
+		return true
+	}
+	if configDir != "" || claudePrintWhy(req, binary) != "" {
+		// a saved account's folder is magpie's, which answers yes, and
+		// claude -p asks nothing
+		return false
+	}
+	trusted, err := claudeTrusts(work)
+	if err != nil {
+		log.Printf("claude: whether Claude Code trusts the caller's folder is unknown (%v); the run goes there", logSafe(err.Error()))
+		return false
+	}
+	if !trusted {
+		log.Printf("claude: Claude Code hasn't been told to trust %s; the run goes in magpie's own folder, told the caller's", logSafe(work))
+	}
+	return !trusted
 }
 
 // startRun is start's Claude Code, from the saved session from when set.
@@ -989,7 +1026,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	work := ""
 	if binary.wsl == nil {
 		work = clientWorkDir(req)
-		if work != "" && b.passedOver(configDir, work) {
+		if work != "" && b.untrustedHere(req, binary, configDir, work) {
 			work = ""
 		}
 	}
@@ -1037,13 +1074,20 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 			b.sweepSessions(sessions)
 		}
 	}
+	// kept is the session from was, for startTrusted to go on with in
+	// magpie's folder when Claude Code asks about the caller's
+	kept := false
 	if from != nil {
-		defer from.discard() // unless the run took it
+		defer func(from *savedSession) {
+			if !kept {
+				from.discard() // unless the run took it
+			}
+		}(from)
 		if sessions == nil || !slices.Equal(from.sessions, sessions) || !from.saved() {
 			from = nil
 		}
 	}
-	if from != nil && from == req.branch && !from.tui && claudeTUIOn() {
+	if from != nil && from == req.branch && !from.tui && wantTUI(req) {
 		// a branch of a -p run's session, made before the interactive
 		// mode was turned on: -p's prompt isn't the interactive mode's,
 		// so the cache has nothing of it; a new interactive Claude Code
@@ -1134,7 +1178,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	// runs them interactively. A run it can't take is refused, never made
 	// -p: a refused request never ran, and isn't the last run
 	tui, code := claudeTUI(req, binary)
-	if !tui && code != "off" && code != "no-shim" {
+	if !tui && code != "off" && code != "no-shim" && code != thirdPartyCode {
 		cleanup()
 		return nil, nil, &tuiRefusal{claudeTUIErr(claudeNotTUIWhy(req, binary))}
 	}
@@ -1189,6 +1233,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		// (startTrusted)
 		env = append(env, claudetui.TrustEnv+"=1")
 	}
+	env = append(env, claudeBypassEnv(tui, configDir)...)
 	if tui && !client {
 		// a saved account's run in magpie's folder is never asked (#4830)
 		trustWork(binary, configDir, work)
@@ -1286,6 +1331,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		if err := run.cliControlWithin(ctx, map[string]any{"subtype": "initialize"}, wait); err != nil {
 			run.abort()
 			if tui && client && configDir == "" && run.saidOnEnd(claudetui.Untrusted) {
+				kept = true
 				return nil, nil, &tuiUntrusted{key: configDir + "\x00" + work, dir: work, err: err}
 			}
 			var unanswered *controlUnanswered
@@ -1386,6 +1432,7 @@ func claudePrint(req *Request, binary claudeCLI) (code, why string) {
 		code, why string
 	}{
 		{urlImages(req.Messages) > 0, "image", "an image known by its URL"},
+		{req.tuiRefused, thirdPartyCode, "Anthropic refused this agent's system prompt in the interactive mode as a third-party app's"},
 	} {
 		if c.is {
 			return c.code, c.why
@@ -1664,6 +1711,14 @@ func claudeTUIOn() bool {
 	return claudeTUIRuns && !settings.Load().ClaudePrintMode
 }
 
+// wantTUI is whether req's run is to be the interactive mode: it is on,
+// and Anthropic hasn't refused req's agent's prompt there (tuiRefused).
+// A -p run made for such a prompt goes on with its turns, as a -p run
+// from before the interactive mode was turned on doesn't.
+func wantTUI(req *Request) bool {
+	return claudeTUIOn() && !req.tuiRefused
+}
+
 // claudeNotTUIWhy is why a run isn't the interactive mode.
 func claudeNotTUIWhy(req *Request, binary claudeCLI) string {
 	if why := claudePrintWhy(req, binary); why != "" {
@@ -1805,7 +1860,7 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 	if run == nil {
 		return nil, nil
 	}
-	if !run.tui && claudeTUIOn() {
+	if !run.tui && wantTUI(req) {
 		// a -p run from before the interactive mode was turned on goes
 		// on with no turn more
 		run.abortFor("Claude Code's interactive mode is on, and this run is -p")
@@ -2505,7 +2560,9 @@ func (r *subscriptionRun) noteLines(uuid, model, msg string, ids []string) {
 	}
 	r.lineSeq++
 	for _, id := range ids {
-		r.lines[id] = callLine{uuid: uuid, seq: r.lineSeq}
+		// the conversation its reply answered, kept as the run parked on
+		// the call before its line was read (park)
+		r.lines[id] = callLine{uuid: uuid, seq: r.lineSeq, told: r.lines[id].told}
 	}
 	if len(r.lines) > linesMost {
 		for id, l := range r.lines {
@@ -2577,12 +2634,12 @@ func (b *subscriptionBridge) branch(req *Request, owner string) *savedSession {
 		run.mu.Lock()
 		at, seq, said := "", 0, ""
 		for _, id := range calls {
-			if l, ok := run.lines[id]; ok && l.seq > seq {
+			if l, ok := run.lines[id]; ok && l.uuid != "" && l.seq > seq {
 				at, seq, said = l.uuid, l.seq, l.told
 			}
 		}
 		sid, sessions := run.sessionID, slices.Clone(run.sessions)
-		usable := !run.closed && !run.rewound && run.lean == req.leanPrompt && !run.clientMarks && (run.tui || !claudeTUIOn())
+		usable := !run.closed && !run.rewound && run.lean == req.leanPrompt && !run.clientMarks && (run.tui || !wantTUI(req))
 		run.mu.Unlock()
 		if at == "" {
 			continue
@@ -3078,6 +3135,31 @@ func (r *subscriptionRun) park() {
 		if l.seq > r.parkedSeq && l.told == "" {
 			l.told = r.told
 			r.lines[id] = l
+		}
+	}
+	// The interactive mode streams a reply first and its session lines
+	// come after, read from the file Claude Code writes (118 to 162ms
+	// after the call), so the run parks before it has the line of a call
+	// it made. The calls the client was shown are this reply's: they
+	// answer the conversation heard now, whenever their line comes
+	// (noteLines keeps it). Before, the line came with no conversation
+	// and the next park gave it the next request's, so no request that
+	// answered those calls after another did matched it (branch): Claude
+	// Code's AgentSummary, asking its sub-agent's progress with the
+	// results the sub-agent's own next turn had taken, and a fork's
+	// directive were told the whole conversation by a new Claude Code,
+	// pasted as one text, and read only the tools and system prompt from
+	// the cache, 6% of 169k twice in 35s (kay20475 on X).
+	if r.lines == nil {
+		r.lines = map[string]callLine{}
+	}
+	for _, c := range r.shown {
+		if l := r.lines[c.id]; l.told == "" {
+			if l.uuid == "" {
+				l.seq = r.lineSeq // aged as a line noted now (linesMost)
+			}
+			l.told = r.told
+			r.lines[c.id] = l
 		}
 	}
 	r.parkedSeq = r.lineSeq
@@ -6130,6 +6212,14 @@ var ratelimitWindows = map[string]string{
 // on them.
 func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, name, model, owner string, body []byte, usage *Usage,
 	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
+	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, false)
+}
+
+// serveSubscriptionAs is serveSubscription, asPrint for the turn asked
+// again as claude -p after the interactive mode's run was refused as a
+// third-party app's with nothing of the reply said (redoAsPrint).
+func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, from provider.Protocol, name, model, owner string, body []byte, usage *Usage,
+	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), asPrint bool) (int, string) {
 	var req *Request
 	var err error
 	if name == "Claude Code" && wantsClientCache(r, from) {
@@ -6184,7 +6274,17 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 			}
 		}
 	}
-	if name == "Claude Code" && claudeTUIOn() && urlImages(req.Messages) > 0 {
+	// a turn whose agent's system prompt Anthropic refused in the
+	// interactive mode as a third-party app's runs as claude -p, which is
+	// served it: asked again after the refusal, or of a prompt refused
+	// within thirdPartyFor (#4503)
+	if name == "Claude Code" && claudeTUIOn() && (asPrint || s.subscription.tuiRefused(req)) {
+		req.tuiRefused = true
+		if req.clientCache != nil {
+			req.clientCache.print = true
+		}
+	}
+	if name == "Claude Code" && wantTUI(req) && urlImages(req.Messages) > 0 {
 		// the interactive mode is pasted files: an image known by its URL
 		// is downloaded first, as -p's Claude Code had Anthropic fetch it
 		if err := fetchURLImages(r.Context(), req.Messages); err != nil {
@@ -6194,7 +6294,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 	// the interactive mode answers a schema through magpie's answer tool
 	var answer Tool
 	var answerSchema *jsonschema.Schema
-	if name == "Claude Code" && claudeTUIOn() && len(req.Format.schema()) > 0 {
+	if name == "Claude Code" && wantTUI(req) && len(req.Format.schema()) > 0 {
 		if answerSchema, err = compileAnswerSchema(cliSchema(req.Format.schema())); err != nil {
 			return writeError(w, from, 400, "Claude Code: "+err.Error()), err.Error()
 		}
@@ -6385,12 +6485,21 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 		defer close(quit)
 		events = keepBridgeHeard(events, quit)
 	}
-	return relay(w, r, from, name, req, events, usage, abort, begin, func(said, stop string, ok bool) {
+	code, msg := relay(w, r, from, name, req, events, usage, abort, begin, func(said, stop string, ok bool) {
 		if !gone() {
 			return // the client went first: letGo has the run
 		}
 		run.ended(req, said, stop, ok)
 	})
+	if req.interactive && strings.Contains(msg, thirdPartyWords) {
+		s.subscription.refusedTUI(req)
+	}
+	if code == redoAsPrint {
+		gone()
+		log.Printf("claude: Anthropic refused an interactive-mode turn on %s as a third-party app's, with nothing of the reply said: asked again as claude -p (#4503)", req.Model)
+		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, true)
+	}
+	return code, msg
 }
 
 // bridgeFailed is the status and words a client is answered with when an
@@ -6433,15 +6542,16 @@ const thirdPartyWords = "Third-party apps now draw from your extra usage"
 // answered with, with what happened and what to do said after it when
 // Anthropic refused the turn as a third-party app's (#4503). The bare
 // 400 said "keep going" and nothing of why a client's turn was refused
-// while plain ones were served. magpie never asks again on its own, as
-// claude -p or otherwise: a second try may draw from the account's extra
-// usage, which is the user's to spend (the owner's call on #4503). The
-// refusal is about the request, the same on every account, so it stays a
-// 400 that no account rests for and the next isn't asked
+// while plain ones were served. An interactive-mode turn refused with
+// nothing of its reply said is asked again as claude -p before it gets
+// here (redoAsPrint); one that gets here had begun its reply, and the
+// next turns of its agent's prompt run as -p (tuiRefused). The refusal
+// is about the request, the same on every account, so it stays a 400
+// that no account rests for and the next isn't asked
 // (TestClaudeTUIRefusalIsNoAccountsFault). The words avoid quotaWords',
 // which would read it as an account out of quota.
 func thirdPartyRefused(name string, req *Request, code int, msg string) string {
-	if name != "Claude Code" || code != http.StatusBadRequest || !strings.Contains(msg, thirdPartyWords) {
+	if !thirdPartySaid(name, code, msg) {
 		return msg
 	}
 	if !req.interactive {
@@ -6449,12 +6559,95 @@ func thirdPartyRefused(name string, req *Request, code int, msg string) string {
 		return msg + " (magpie: Anthropic counted this turn, run as claude -p, as a third-party app's and answered nothing. " +
 			"Asking again may draw from the Claude account's extra usage, so magpie doesn't ask again on its own.)"
 	}
-	log.Printf("claude: Anthropic refused an interactive-mode turn on %s as a third-party app's (#4503)", req.Model)
-	return msg + " (magpie: Anthropic counted this turn as a third-party app's and answered nothing. " +
+	log.Printf("claude: Anthropic refused an interactive-mode turn on %s as a third-party app's, its reply begun (#4503)", req.Model)
+	return msg + " (magpie: Anthropic counted this turn as a third-party app's once its reply had begun. " +
 		"It ran in Claude Code's interactive mode with your agent's own system prompt, which Anthropic can refuse there. " +
-		"Asking again the same way may draw from the Claude account's extra usage, so magpie doesn't ask again on its own. " +
-		"Claude Code as claude -p is served such prompts: turn off Claude Code's interactive mode in Settings › Models › Replies " +
-		"or in this provider's editor; the plan counts a -p request at about twice the interactive mode's.)"
+		"magpie runs this agent's next turns as claude -p, which is served such prompts: ask again.)"
+}
+
+// thirdPartySaid is whether a Claude Code run's failure is Anthropic's
+// refusal of its turn as a third-party app's.
+func thirdPartySaid(name string, code int, msg string) bool {
+	return name == "Claude Code" && code == http.StatusBadRequest && strings.Contains(msg, thirdPartyWords)
+}
+
+// thirdPartyCode is claudePrint's code for a run that is claude -p
+// because Anthropic refused its agent's prompt in the interactive mode.
+const thirdPartyCode = "third-party"
+
+// redoAsPrint is relay's status for an interactive-mode turn Anthropic
+// refused as a third-party app's (#4503, Raven on Discord: Pi in Cindy
+// through group/auto) before any of its reply was said, or reached the
+// client: nothing was written, and serveSubscriptionAs asks it again, once,
+// as claude -p, which isjiajia01's controlled tests had served the same
+// prompt. Anthropic answered the refused turn nothing, so the -p run is
+// its only answer, and one that would draw from extra usage would have
+// been served, not refused. A -p turn is never asked again (req.interactive
+// is false), and neither is one whose reply had begun: that client has its
+// start already, and the turn may have said or done something.
+const redoAsPrint = -4503
+
+// redoable is whether relay hands an interactive-mode turn's refusal,
+// code and msg, back as redoAsPrint: Anthropic's third-party refusal, the
+// user's interactive mode still on (Off, every run is -p already), and the
+// client still waiting.
+func redoable(r *http.Request, name string, req *Request, code int, msg string) bool {
+	return req.interactive && !req.tuiRefused && thirdPartySaid(name, code, msg) && claudeTUIOn() && r.Context().Err() == nil
+}
+
+// thirdPartyFor is how long an agent's system prompt Anthropic refused in
+// the interactive mode runs as claude -p before the interactive mode is
+// tried for it again. A try refused costs a Claude Code's start and no
+// usage; a -p turn the plan counts at about twice.
+const thirdPartyFor = 12 * time.Hour
+
+// thirdPartyKeyLen is how much of a system prompt its fingerprint reads:
+// an agent's own part, which comes first, and not what it adds after of
+// the day, its folder or its files (Pi's date and working directory), so
+// that each conversation of the agent isn't refused once first.
+const thirdPartyKeyLen = 2048
+
+// thirdPartyKey is req's agent's system prompt's fingerprint, "" when it
+// has none: what the interactive mode was refused for is the prompt,
+// judged as a whole (#4503), not the account or the conversation.
+func thirdPartyKey(req *Request) string {
+	sys := strings.TrimSpace(withoutBillingHeader(req.System))
+	if sys == "" {
+		return ""
+	}
+	if len(sys) > thirdPartyKeyLen {
+		sys = sys[:thirdPartyKeyLen]
+	}
+	sum := sha256.Sum256([]byte(sys))
+	return hex.EncodeToString(sum[:])
+}
+
+// refusedTUI keeps that Anthropic refused req's agent's prompt in the
+// interactive mode, for its next turns to run as claude -p (tuiRefused).
+func (b *subscriptionBridge) refusedTUI(req *Request) {
+	key := thirdPartyKey(req)
+	if key == "" {
+		return
+	}
+	now := time.Now()
+	b.thirdParty.Range(func(k, v any) bool {
+		if now.Sub(v.(time.Time)) >= thirdPartyFor {
+			b.thirdParty.Delete(k)
+		}
+		return true
+	})
+	b.thirdParty.Store(key, now)
+}
+
+// tuiRefused is whether Anthropic refused req's agent's prompt in the
+// interactive mode within thirdPartyFor.
+func (b *subscriptionBridge) tuiRefused(req *Request) bool {
+	key := thirdPartyKey(req)
+	if key == "" {
+		return false
+	}
+	at, ok := b.thirdParty.Load(key)
+	return ok && time.Since(at.(time.Time)) < thirdPartyFor
 }
 
 // bridgeHeardAfter is how long a Claude Code run may work on its turn
@@ -6582,8 +6775,12 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 			}
 			code := 502
 			if n > 0 {
-				usage.add(Usage{ErrType: head[n-1].Code, RequestID: head[n-1].RequestID})
 				code, msg = bridgeFailed(name, msg, head[n-1].Status)
+				// nothing of the reply was said, nor has reached the client
+				if redoable(r, name, req, code, msg) {
+					return redoAsPrint, msg
+				}
+				usage.add(Usage{ErrType: head[n-1].Code, RequestID: head[n-1].RequestID})
 				msg = thirdPartyRefused(name, req, code, msg)
 			}
 			return writeError(w, from, code, name+": "+msg), msg
@@ -6654,8 +6851,11 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 		// client yet, so it is told the failure, as a translated reply
 		// cut short is (errEndedShort)
 		usage.add(col.res.Usage)
-		usage.add(Usage{ErrType: col.errCode})
 		code, msg := bridgeFailed(name, col.err, col.errStatus)
+		if len(col.res.Parts) == 0 && redoable(r, name, req, code, msg) {
+			return redoAsPrint, msg
+		}
+		usage.add(Usage{ErrType: col.errCode})
 		msg = thirdPartyRefused(name, req, code, msg)
 		return writeError(w, from, code, name+": "+msg), msg
 	}

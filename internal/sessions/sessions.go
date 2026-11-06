@@ -224,6 +224,9 @@ type state struct {
 	// Claude Code: the entrypoint its first line naming one says, which
 	// tells a session Claude Desktop's Code tab ran (desktopEntrypoint)
 	Entry string `json:"entry,omitempty"`
+	// Claude Code: parsed by a magpie that reads /cd's relocated lines
+	// (ccRelocated), so Cwd is the folder the session was last moved to
+	CdRead bool `json:"cd_read,omitempty"`
 	// Claude Code: the message last counted, whose later lines repeat it,
 	// and the day it was counted on
 	Msg      string `json:"msg,omitempty"`
@@ -694,15 +697,24 @@ func listCCFiles(agent, dir string) []file {
 // files.
 var filesHook func()
 
-func allFiles() []file {
+func allFiles() []file { return allFilesWith(zcodeFiles) }
+
+// allFilesForTitles is allFiles with ZCode's sessions listed from their own
+// rows alone: a name poll needs titles, not every message counted
+// (zcodeFiles joins them for a session's size and last activity).
+func allFilesForTitles() []file { return allFilesWith(zcodeTitleFiles) }
+
+func allFilesWith(zcode func() []file) []file {
 	if filesHook != nil {
 		filesHook()
 	}
+	lists := callFileLists(codexFiles())
+	lists = append(lists, openCodeFiles(), piFiles(), raftFiles(), cindyFiles(), wslFiles("pi", "raft", "omp", "kimi"), zcode())
+	lists = append(lists, dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
+		grokFiles(), workbuddyFiles(), workbuddyAIFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles(), agyFiles())
 	// each lister asked Reads already; a file listed under another
 	// agent's name is held to that agent too
-	return allowed(distinctOf(append(callFileLists(codexFiles()), openCodeFiles(), piFiles(), raftFiles(), cindyFiles(),
-		wslFiles("pi", "raft", "omp", "kimi"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
-		grokFiles(), workbuddyFiles(), workbuddyAIFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles(), agyFiles())...))
+	return allowed(distinctOf(lists...))
 }
 
 // distinctOf is lists one after another with each path kept once, the
@@ -1329,7 +1341,7 @@ func refresh(want, all []file) {
 		if f.cold {
 			continue // in a stopped WSL distro: what was read of it stands
 		}
-		if s := parsed(f.path); s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.m().hermes == nil || f.m().rev == "" || s.DBRevision != f.m().rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy") && s.DBRevision != f.m().rev) {
+		if s := parsed(f.path); s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || ccStale(f, s) || (f.agent == "hermes" && (f.m().hermes == nil || f.m().rev == "" || s.DBRevision != f.m().rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy") && s.DBRevision != f.m().rev) {
 			if parsing[f.path] != nil {
 				// a refresh is reading it, another or this one (a path
 				// listed twice): its last parse stands until that one is
@@ -1344,11 +1356,15 @@ func refresh(want, all []file) {
 			// publish closed a nil channel (#2932)
 			parsing[f.path] = make(chan struct{})
 			todo = append(todo, f)
-		} else if s.Agent != f.agent && parsing[f.path] == nil {
+		} else if (s.Agent != f.agent || f.agent == "claude" && !s.CdRead) && parsing[f.path] == nil {
 			// kept by a magpie that didn't name the agent: named now, so
-			// a raise of another agent's parseVersions keeps it
+			// a raise of another agent's parseVersions keeps it. A Claude
+			// Code parse whose folder is the file's (not ccStale) is as a
+			// read of the relocated lines would make it, and is marked so,
+			// so the folder isn't worked out again on every refresh
 			n := *s
 			n.Agent = f.agent
+			n.CdRead = n.CdRead || f.agent == "claude"
 			cache[f.path] = &n
 			named = true
 		}
@@ -1967,6 +1983,9 @@ func parseWith(f file, old *state, calls *callsRide) *state {
 	if parser.claude && old != nil && old.Claude == nil {
 		old = nil
 	}
+	if ccStale(f, old) {
+		old = nil
+	}
 
 	headBytes := headOf(f.path)
 	var s *state
@@ -1977,6 +1996,7 @@ func parseWith(f file, old *state, calls *callsRide) *state {
 	}
 	s.Size, s.Mod = f.size, f.mod.UnixNano()
 	s.Head, s.HeadSize = hashHead(headBytes), len(headBytes)
+	s.CdRead = parser.claude
 	s.ContentHash = prefixHash(f.path, f.size)
 	var head func([]byte) bool
 	if f.agent == "codex" {
@@ -2733,7 +2753,30 @@ func Titles(keys []string) map[string]string {
 	defer mu.Unlock()
 	loadCache()
 	defer useDBs()()
-	files := allFiles()
+	files := allFilesForTitles()
+	// ZCode files a subagent under sess_subagent_agent_<id>, with its
+	// conversation under the parent session's key (ocRoots). A request
+	// names it by the bare id, so its title is read from its own file
+	// when no group carries the key asked for.
+	subFiles := map[string]*file{}
+	for i := range files {
+		f := &files[i]
+		if id, ok := strings.CutPrefix(f.m().sid, "sess_subagent_agent_"); ok && f.agent == "zcode" {
+			subFiles[id] = f
+		}
+	}
+	subAsked := map[string]string{} // the key asked for → the subagent's file
+	for _, k := range keys {
+		agent, id, ok := strings.Cut(k, ":")
+		if !ok || agent != "zcode" {
+			continue
+		}
+		if f := subFiles[strings.TrimPrefix(id, "sess_subagent_agent_")]; f != nil {
+			want[f.key] = true
+			subAsked[k] = f.path
+		}
+	}
+	zcodeTitleStamps(files, want)
 	groups := byKey(files, func(f *file) bool { return want[f.key] })
 	var fs []file
 	for _, f := range files {
@@ -2763,6 +2806,16 @@ func Titles(keys []string) map[string]string {
 			out[k] = s.Title
 			if asked := alias[k]; asked != "" {
 				out[asked] = s.Title
+			}
+		}
+	}
+	for k, path := range subAsked {
+		if out[k] != "" {
+			continue
+		}
+		if st := cache[path]; st != nil {
+			if name := cmp.Or(st.Named, st.Title, st.First); name != "" {
+				out[k] = name
 			}
 		}
 	}

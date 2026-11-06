@@ -84,6 +84,9 @@ type Model struct {
 	// provider after it (magpie_label): the name Provider in model names
 	// Off has here (ARNO on Discord).
 	Plain string `json:",omitempty"`
+	// Via, on a model of another magpie's list, is the magpies it passes
+	// through to its vendor, that one last (magpie_via.go)
+	Via []string `json:",omitempty"`
 	// Apart, in a list magpie hands Codex, is what tells the model from
 	// another entry Codex's picker would call the same (two providers
 	// named Codex each serving GPT-6.1-Sol, nb5p on Discord): its
@@ -123,6 +126,12 @@ type Model struct {
 	// with (a Remote magpie's Grok Imagine Video): kept with the list for
 	// its videos API, never offered as a model to talk to or draw with.
 	Films bool `json:",omitempty"`
+	// Serves is set on a vendor-listed model made for an API other than
+	// chat, images or video (ServesEmbedding, ServesRerank, ServesSpeech,
+	// ServesTranscription): kept with the list for that API's routes and
+	// their groups of one kind (provider.KindGroup), never offered to
+	// agents as a model to talk to (#5339, XYenon on Discord).
+	Serves string `json:",omitempty"`
 	// Decides marks a decision model another magpie explicitly lists,
 	// including models whose ids don't name Jev.
 	Decides bool `json:",omitempty"`
@@ -1925,6 +1934,37 @@ func unprofiled(b string) (string, bool) {
 	return "", false
 }
 
+// The APIs a model Serves is made for.
+const (
+	ServesEmbedding     = "embedding"
+	ServesRerank        = "rerank"
+	ServesSpeech        = "speech"
+	ServesTranscription = "transcription"
+)
+
+// ServesOf is the API a model's id says it is made for, other than chat,
+// images or video: "" for any other model. Read from the id alone, as
+// vendors' OpenAI-style lists say no more (text-embedding-3-small,
+// bge-reranker-v2-m3, tts-1, gpt-4o-mini-tts, whisper-1,
+// gpt-4o-transcribe).
+func ServesOf(id string) string {
+	id = strings.ToLower(id)
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	switch {
+	case strings.Contains(id, "rerank"):
+		return ServesRerank
+	case strings.Contains(id, "embed") || strings.HasPrefix(id, "bge-"):
+		return ServesEmbedding
+	case strings.Contains(id, "whisper") || strings.Contains(id, "transcribe"):
+		return ServesTranscription
+	case strings.HasPrefix(id, "tts-") || strings.Contains(id, "-tts"):
+		return ServesSpeech
+	}
+	return ""
+}
+
 func textModel(m mdModel) bool {
 	if len(m.Modalities.Output) > 0 {
 		text := false
@@ -1989,6 +2029,19 @@ func ImagesAPI(id string) bool {
 		}
 	}
 	return false
+}
+
+// FilmsID is whether a model's id names one that makes videos, for a model
+// whose list says nothing of a kind: OpenAI's sora-2 and sora-2-pro are
+// made at its OpenAI-shaped videos API, which the gateway speaks, but
+// textModel counts their ids out of the chat models, and a list that
+// marks no kind left them unlisted at all — never offered to talk to, and
+// never marked a video model in the provider's editor (#4954). The other
+// video families keep the faces their own APIs are asked on: Ark's
+// Seedance at its tasks (gateway arkVideoModel), a MiniMax key's H3
+// (video_minimax.go), and a model the user says makes videos (#1399).
+func FilmsID(id string) bool {
+	return strings.Contains(strings.ToLower(id), "sora")
 }
 
 // PointsToImagesAPI is whether a vendor's refusal of a chat request names

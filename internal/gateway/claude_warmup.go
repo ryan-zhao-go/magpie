@@ -114,6 +114,7 @@ func askClaudeTUI(ctx context.Context, binary claudeCLI, configDir, model string
 	}
 	// the folder is magpie's own: asked whether to trust it, say yes
 	env = append(env, claudetui.TrustEnv+"=1")
+	env = append(env, claudeBypassEnv(true, configDir)...)
 	env = append(env, helperDeadline(ctx)...)
 	cmd.Env = binary.tuiEnv(binary.env(binary.asRoot(env), configDir), configDir)
 	stdin, err := cmd.StdinPipe()
@@ -268,6 +269,7 @@ func claudeUsageTUI(ctx context.Context, binary claudeCLI, configDir string) (st
 	}
 	// the folder is magpie's own: asked whether to trust it, say yes
 	env = append(env, claudetui.TrustEnv+"=1")
+	env = append(env, claudeBypassEnv(true, configDir)...)
 	env = append(env, helperDeadline(ctx)...)
 	cmd.Env = binary.tuiEnv(binary.env(binary.asRoot(env), configDir), configDir)
 	stdin, err := cmd.StdinPipe()
@@ -348,15 +350,21 @@ func claudeTrustKeys(binary claudeCLI, work string) []string {
 	}
 	var keys []string
 	for _, w := range []string{work, evalSymlinks(work)} {
-		k := norm.NFC.String(filepath.Clean(w))
-		if trustGOOS == "windows" {
-			k = strings.ReplaceAll(k, `\`, "/")
-		}
-		if !slices.Contains(keys, k) {
+		if k := claudeTrustKey(w); !slices.Contains(keys, k) {
 			keys = append(keys, k)
 		}
 	}
 	return keys
+}
+
+// claudeTrustKey is the projects key Claude Code (2.1.316) gives folder
+// dir: its path in NFC, on Windows with forward slashes.
+func claudeTrustKey(dir string) string {
+	k := norm.NFC.String(filepath.Clean(dir))
+	if trustGOOS == "windows" {
+		k = strings.ReplaceAll(k, `\`, "/")
+	}
+	return k
 }
 
 // dropOneOff removes the session a one-off interactive run left in
@@ -537,4 +545,16 @@ func clip(s string) string {
 		return s[:300] + "…"
 	}
 	return s
+}
+
+// claudeBypassEnv lets the shim accept Claude Code's Bypass Permissions
+// disclaimer (#5042) only in an account folder of magpie's: Claude Code
+// records the acceptance in that folder's settings.json for good, and in
+// the account it is signed in to (configDir "", the user's own config
+// folder) that is the user's to give.
+func claudeBypassEnv(tui bool, configDir string) []string {
+	if !tui || configDir == "" {
+		return nil
+	}
+	return []string{claudetui.BypassEnv + "=1"}
 }

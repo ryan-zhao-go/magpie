@@ -46,10 +46,13 @@ type ModelMove struct {
 }
 
 type Route struct {
-	// callerKey: the gateway key the request came with, so a key held to
-	// a budget, models or accounts is told the routes of its own requests
-	// alone (sessionLatest, #1981)
-	callerKey     string
+	// CallerKey: the gateway key the request came with, by its id and the
+	// name it had then, never its secret: a key held to a budget, models
+	// or accounts is told the routes of its own requests alone
+	// (sessionLatest, #1981), and the Routing page groups the requests by
+	// key (acezan on Discord). None for a request without one.
+	CallerKey     string `json:"callerKey,omitempty"`
+	CallerKeyName string `json:"callerKeyName,omitempty"`
 	imageTurn     string
 	imageCaller   string
 	imageProvider string
@@ -121,9 +124,16 @@ type Route struct {
 	Done   bool    `json:"done"`
 	Status int     `json:"status,omitempty"`
 	Error  string  `json:"error,omitempty"`
-	Millis int64   `json:"ms,omitempty"`
-	Tokens int     `json:"tokens,omitempty"`
-	Output int     `json:"out,omitempty"` // of Tokens, the reply's
+	// Fail: why the failure the agent was told failed (toldFail), set
+	// when it was an earlier try's than the last (Try.Earlier, or every
+	// account after it passed over by a middleware): the request's row
+	// pairs Status with it, not with the last try's own Fail (danzi002 on
+	// Discord: an earlier account's 529 server_is_overloaded read
+	// "529 · quota used up" beside the last account's usage limit)
+	Fail   string `json:"fail,omitempty"`
+	Millis int64  `json:"ms,omitempty"`
+	Tokens int    `json:"tokens,omitempty"`
+	Output int    `json:"out,omitempty"` // of Tokens, the reply's
 	// Reasoning: of Output, the reply's reasoning, which its speed leaves
 	// out (usage.DecodeOf)
 	Reasoning int `json:"reasoning,omitempty"`
@@ -689,10 +699,19 @@ func (t *trace) changed() {
 // Every route of a request begins here, so a held key's own routes are
 // told it: one begun without (begin alone) is told to no held key.
 func (t *trace) beginFor(req *http.Request, r Route) *Route {
-	r.callerKey = access.Caller(req.Context()).KeyID
+	r.CallerKey, r.CallerKeyName = callerKeyOf(req.Context())
 	rt := t.begin(r)
 	noteRoute(req.Context(), rt)
 	return rt
+}
+
+// callerKeyOf is the gateway key ctx's request came with: its id and name.
+func callerKeyOf(ctx context.Context) (id, name string) {
+	who := access.Caller(ctx)
+	if who.KeyID == "" {
+		return "", ""
+	}
+	return who.KeyID, who.KeyName
 }
 
 func (t *trace) begin(r Route) *Route {

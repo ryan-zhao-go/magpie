@@ -1038,6 +1038,15 @@ func GroupFinder() func(id string) (Group, []Member, bool) {
 // beside them (jzw690 on X), so a group of image models draws on its
 // members without any of them being a model agents are offered.
 func FindDrawingGroup(id string, draws func(p Provider, model string) bool) (Group, []Member, bool) {
+	return FindGroupAlso(id, draws)
+}
+
+// FindGroupAlso is FindGroup with a member also says is the group's kept
+// where its provider's picks leave it out: picks are of chat models, so a
+// group of models made for another API (images, embeddings, speech,
+// video) keeps those of a provider with picks only so (FindDrawingGroup,
+// the gateway's media groups).
+func FindGroupAlso(id string, also func(p Provider, model string) bool) (Group, []Member, bool) {
 	gid, ok := GroupIDOf(id)
 	if !ok {
 		return Group{}, nil, false
@@ -1045,7 +1054,7 @@ func FindDrawingGroup(id string, draws func(p Provider, model string) bool) (Gro
 	entries := providerEntries()
 	all := groupsIn(entries)
 	if g, ok := groupOf(all, gid); ok && !g.Disabled {
-		return g, membersFound(entries, entriesBy(entries), all, g, disabledNow(), draws), true
+		return g, membersFound(entries, entriesBy(entries), all, g, disabledNow(), also), true
 	}
 	return Group{}, nil, false
 }
@@ -1140,7 +1149,7 @@ func unpicked(find entryOf, p Provider, m string) bool {
 // Resolve, which still takes it.
 func ResolveRoute(id string) (Provider, string, bool) {
 	entries := providerEntries()
-	p, m, ok := resolveIn(entries, strings.TrimSuffix(strings.TrimSpace(id), "[1m]"))
+	p, m, ok := resolveIn(entries, ThroughSelf(strings.TrimSuffix(strings.TrimSpace(id), "[1m]")))
 	// one pass for the one model, not a map of every entry (entriesBy):
 	// a request asks it for each fallback it may go to
 	find := func(pid, model string) int {

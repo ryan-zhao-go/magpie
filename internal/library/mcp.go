@@ -236,6 +236,10 @@ const (
 	// command/args/env or url/headers — no type on an entry, its shape
 	// saying which, and no way to name SSE (kiro.dev/docs/mcp/configuration)
 	fmtKiro
+	// fmtLiveAgent is LiveAgent's MCP settings, K-brain's
+	// config.json.live-mcp.json: a list of servers, each by its id, stdio
+	// or streamable HTTP (liveagent.go)
+	fmtLiveAgent
 )
 
 // mcpFile is the file an agent keeps its user-wide MCP servers in.
@@ -286,7 +290,7 @@ func (f *mcpFile) supports(s *Server) error {
 	if f.Format == fmtDesktop && s.Remote() {
 		return errNoRemote
 	}
-	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed || f.Format == fmtKiro) {
+	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed || f.Format == fmtKiro || f.Format == fmtLiveAgent) {
 		return errNoSSE
 	}
 	if f.Format == fmtDsh && s.Name != "" && !dshServerName.MatchString(s.Name) {
@@ -468,6 +472,11 @@ const gooseOldTimeout = 300
 // these, so it is left as it is.
 func (f *mcpFile) behind(s *Server, old map[string]any) bool {
 	if f.Format == fmtCodex && old != nil && startupBehind(s, old) {
+		return true
+	}
+	// a key Codex refuses for the entry's transport stops Codex from
+	// starting at all, so such an entry is written again without it
+	if f.Format == fmtCodex && slices.ContainsFunc(codexRefused(s), func(k string) bool { _, ok := old[k]; return ok }) {
 		return true
 	}
 	if selfTimeout(s, 0) == 0 {
@@ -682,6 +691,23 @@ func (f *mcpFile) encode(s *Server) ordered {
 		} else {
 			add("command", s.Command)
 			add("args", list(s.Args))
+			optional("env", s.Env)
+		}
+	case fmtLiveAgent:
+		// as LiveAgent's own MCP settings save one (K-brain's LiveServer,
+		// internal/mcp/live.go): on, stdio or http, args, env and headers
+		// left out when there are none
+		add("enabled", true)
+		if s.Remote() {
+			add("transport", "http")
+			add("url", s.URL)
+			optional("headers", s.Headers)
+		} else {
+			add("transport", "stdio")
+			add("command", s.Command)
+			if len(s.Args) > 0 {
+				add("args", list(s.Args))
+			}
 			optional("env", s.Env)
 		}
 	case fmtCline:
@@ -979,6 +1005,15 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 		} else {
 			local(str(m, "command"), m["args"], m["env"])
 		}
+	case fmtLiveAgent:
+		// K-brain's transport, or a url's or a command's when there is
+		// none (normalizeLiveSettings); its http is streamable HTTP alone
+		switch t := strings.ToLower(strings.TrimSpace(str(m, "transport"))); {
+		case t == "http" || t == "" && str(m, "url") != "":
+			remote("http", str(m, "url"), m["headers"])
+		case t == "stdio" || t == "":
+			local(str(m, "command"), m["args"], m["env"])
+		}
 	default: // Claude Code, Cursor, Copilot, Crush, ZCode, omp, Grok, Zed
 		t := str(m, "type")
 		if u := str(m, "url"); u != "" {
@@ -1010,6 +1045,9 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 func (f *mcpFile) entries() (map[string]map[string]any, error) {
 	if f.Format == fmtDsh {
 		return dshEntries(f.Path)
+	}
+	if f.Format == fmtLiveAgent {
+		return liveAgentEntries(f.Path)
 	}
 	kind := fmt.Sprintf("mcp entries %d %s", f.Format, f.key())
 	es, err := filememo.Read(kind, f.Path, f.parseEntries)
@@ -1266,6 +1304,9 @@ var owned = map[mcpFormat][]string{
 	// disabled, autoApprove, disabledTools and oauth are the user's; a
 	// transport names nothing Kiro reads
 	fmtKiro: {"transport", "url", "headers", "command", "args", "env"},
+	// enabled, and the id's description, docsUrl, cwd, timeoutMs,
+	// workspaceRoots, policy and auth, are the user's
+	fmtLiveAgent: {"transport", "url", "headers", "command", "args", "env"},
 
 	// a url agy read in place of serverUrl goes when magpie writes one
 	fmtAntigravity: {"type", "serverUrl", "url", "headers", "command", "args", "env"},
@@ -1352,13 +1393,32 @@ func (f *mcpFile) merged(s *Server, old map[string]any) ordered {
 		}
 	}
 	keys := slices.Sorted(maps.Keys(old))
+	var refused []string
+	if f.Format == fmtCodex {
+		refused = codexRefused(s)
+	}
 	for _, k := range keys {
-		if slices.Contains(mine, k) || slices.ContainsFunc(o, func(e kv) bool { return e.k == k }) {
+		if slices.Contains(mine, k) || slices.ContainsFunc(o, func(e kv) bool { return e.k == k }) || slices.Contains(refused, k) {
 			continue
 		}
 		o = append(o, kv{k, old[k]})
 	}
 	return o
+}
+
+// codexRefused are the keys of the other transport, which Codex refuses
+// in an entry of s's: a command's beside a URL, a URL's beside a command.
+// Codex then won't load its config at all ("env_vars is not supported for
+// streamable_http"), so such a key, left from when the server was the
+// other kind, goes when magpie writes the entry; the user's keys of s's
+// own transport stay (codex-rs/config/src/mcp_types.rs, TryFrom
+// RawMcpServerConfig). bearer_token, which Codex refuses for both, is the
+// user's to take out.
+func codexRefused(s *Server) []string {
+	if s.Remote() {
+		return []string{"args", "env", "env_vars", "cwd"}
+	}
+	return []string{"url", "bearer_token_env_var", "http_headers", "env_http_headers", "http_headers_helper", "oauth", "oauth_resource", "auth"}
 }
 
 // put writes the server into the file, in place of one by its name.
@@ -1387,6 +1447,8 @@ func (f *mcpFile) putEntry(s *Server, o ordered) error {
 			}
 		}
 		return nil
+	case fmtLiveAgent:
+		return liveAgentPut(f.Path, s.Name, o)
 	}
 	// Claude Code saves the file under its own lock: read and written
 	// back under it, or a save of its own between the two is lost (#4747)
@@ -1434,6 +1496,8 @@ func (f *mcpFile) del(name string) error {
 		return nil
 	case fmtCodex, fmtGrok:
 		return delCodex(f.Path, name, true)
+	case fmtLiveAgent:
+		return liveAgentDel(f.Path, name)
 	case fmtGoose:
 		return edit.DelYAML(f.Path, "extensions."+name)
 	case fmtHermes:

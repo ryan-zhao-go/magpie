@@ -87,6 +87,57 @@ func fakeTrust(r *bufio.Reader, always bool) {
 	}
 }
 
+// fakeBypass shows Claude Code's Bypass Permissions disclaimer, drawn
+// where it runs with --dangerously-skip-permissions and its config
+// folder hasn't accepted it once (2.1.295): "No, exit" chosen, and drawn
+// again on No once it listens, the keys before that lost. Enter on No
+// exits. With always, it never listens, as a question whose answer never
+// goes through.
+func fakeBypass(r *bufio.Reader, always bool) {
+	var mu sync.Mutex
+	yes, deaf := false, true
+	draw := func() {
+		marks := map[bool]string{true: "\x1b[38;2;177;185;249m❯\x1b[39m", false: " "}
+		fmt.Printf("\x1b[2J\x1b[H───── WARNING: Claude Code running in Bypass\x1b[1CPermissions\x1b[1Cmode\r\n\r\nIn\x1b[1CBypass\x1b[1CPermissions\x1b[1Cmode,\x1b[1CClaude\x1b[1CCode\x1b[1Cwill\x1b[1Cnot\x1b[1Cask\r\nfor\x1b[1Cyour\x1b[1Capproval\x1b[1Cbefore\x1b[1Crunning\x1b[1Cpotentially\r\ndangerous\x1b[1Ccommands.\r\n\r\n\x1b[2G%s\x1b[4GNo,\x1b[8Gexit\r\n\x1b[2G%s\x1b[4GYes,\x1b[9GI\x1b[11Gaccept\r\n\r\n Enter to confirm · Esc to cancel\r\n", marks[!yes], marks[yes])
+	}
+	draw()
+	time.AfterFunc(150*time.Millisecond, func() {
+		if always {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		deaf, yes = false, false
+		draw()
+	})
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			os.Exit(0)
+		}
+		if c == 0x1b {
+			seq := make([]byte, 2)
+			if _, err := io.ReadFull(r, seq); err != nil {
+				os.Exit(0)
+			}
+			c = seq[1]
+		}
+		mu.Lock()
+		switch {
+		case deaf:
+		case c == 'B' || c == 'A':
+			yes = c == 'B'
+			draw()
+		case c == '\r' && !yes:
+			os.Exit(1)
+		case c == '\r':
+			mu.Unlock()
+			return
+		}
+		mu.Unlock()
+	}
+}
+
 // fakeOnboard shows Claude Code 2.1.316's onboarding where its config
 // folder has none done (FAKE_ONBOARD set): the text style, the security
 // notes, and with "terminal" whether to set up the terminal. Each is
@@ -183,6 +234,9 @@ func fakeClaude(args []string) {
 	if v := os.Getenv("FAKE_TRUST"); v != "" {
 		fakeTrust(r, v == "deaf")
 	}
+	if v := os.Getenv("FAKE_BYPASS"); v != "" {
+		fakeBypass(r, v == "deaf")
+	}
 	// what it was started with, for the test to read
 	_ = os.WriteFile(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "args"), []byte(strings.Join(args, "\n")), 0o600)
 	// FAKE_TAP: Bun loads the tap BUN_OPTIONS names, which says so, and
@@ -275,6 +329,11 @@ func fakeClaude(args []string) {
 		if tapped != nil {
 			streams++
 			n := streams
+			// FAKE_TAP_LIMITS: the reply's allowance headers, as tap.js
+			// writes them when its stream opens
+			if h := os.Getenv("FAKE_TAP_LIMITS"); h != "" {
+				_, _ = fmt.Fprintf(tapped, `{"s":%d,"open":true,"h":%s}`+"\n", n, h)
+			}
 			for _, e := range []string{`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku","usage":{"input_tokens":3}}}`,
 				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"echo: "}}`,
@@ -613,6 +672,12 @@ func TestShimNeverPrints(t *testing.T) {
 	}{
 		{"failed start", "something went wrong", []string{"FAKE_FAIL=1"}},
 		{"untrusted folder", "trust the folder", []string{"FAKE_TRUST=1"}},
+		// the disclaimer is the user's to accept in their own Claude Code
+		// (#5042), said at once, not waited out
+		{"bypass disclaimer left to the user", "asks to accept", []string{"FAKE_BYPASS=1"}},
+		// a folder trusted for the run is not the disclaimer accepted:
+		// the bridge trusts magpie's folder in the user's own account too
+		{"bypass disclaimer with the folder trusted", "asks to accept", []string{"FAKE_BYPASS=1", TrustEnv + "=1"}},
 		// at once, not after readyWait: runEnds waits 30s (#4504)
 		{"asks to sign in", "sign", []string{"FAKE_LOGIN=1"}},
 		{"first-run screens it stays on", "first-run screens", []string{"FAKE_ONBOARD=stuck"}},
@@ -698,6 +763,9 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 		// the question a saved account's reads waited out on (#4830,
 		// mydosu): said, with the folder, never "showed no prompt"
 		{"trust unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to trust " + wd + ", not answered in the", "trust this folder", []string{"FAKE_TRUST=deaf", TrustEnv + "=1"}},
+		// the disclaimer the spawned claude sat on for 45s, then died in a
+		// loop of them (#5042): said, never "showed no prompt"
+		{"bypass disclaimer unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked to accept running in Bypass Permissions mode, not answered in the", "Bypass Permissions mode", []string{"FAKE_BYPASS=deaf", BypassEnv + "=1"}},
 		// FAKE_USAGE names no panel: nothing is drawn for /usage
 		{"no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "", []string{"FAKE_USAGE=" + filepath.Join(t.TempDir(), "none")}},
 		// the banner drawn again and no panel after it: never told as one
@@ -725,6 +793,19 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 
 func TestShimTrustsWhenTold(t *testing.T) {
 	out := runShim(t, []string{"FAKE_TRUST=1", TrustEnv + "=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
+	if out[0]["subtype"] != "init" || out[1]["type"] != "assistant" {
+		t.Fatalf("got %v, want an interactive turn", out)
+	}
+}
+
+// The Bypass Permissions disclaimer, drawn where the claude magpie spawns
+// runs with --dangerously-skip-permissions (the user's claude may be a
+// wrapper that adds it, #5042) and the config folder hasn't accepted it
+// once, is told yes when BypassEnv says so: only in an account folder of
+// magpie's (claudeBypassEnv), since Claude Code records the acceptance in
+// that folder's settings.json and the next run is shown none of it.
+func TestShimAcceptsBypassDisclaimer(t *testing.T) {
+	out := runShim(t, []string{"FAKE_BYPASS=1", BypassEnv + "=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
 	if out[0]["subtype"] != "init" || out[1]["type"] != "assistant" {
 		t.Fatalf("got %v, want an interactive turn", out)
 	}
@@ -882,6 +963,105 @@ func TestShimReadsUsageBelowTheTwentyFourthRow(t *testing.T) {
 	want := "Current session: 30% used · resets 2pm (Asia/Shanghai)\nCurrent week (all models): 17% used · resets Nov 8 at 4am (Asia/Shanghai)\nCurrent week (Fable): 0% used · resets Nov 8 at 4am (Asia/Shanghai)"
 	if r := out[1]; r["type"] != "result" || r["is_error"] != false || r["result"] != want {
 		t.Fatalf("told %v", r)
+	}
+}
+
+// usagePanel200 is /usage's panel as Claude Code 2.1.316 draws it in the
+// helper's 200 by 50 terminal, from its Usage tab (ko: the tabs, the
+// session's cost, then what gi draws for the plan), a row at a time
+// (CR, ESC[nB). The words are 2.1.316's own; the Enterprise panels below
+// weren't captured from a real account, and are built from them.
+func usagePanel200(t *testing.T, rows ...string) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("\x1b[H\r\x1b[20B   Settings  Status   Config   Usage   Stats\x1b[K")
+	for _, r := range append([]string{"", " Session", "", " Total cost:            $0.0000", " Total duration (API):  0s",
+		" Total duration (wall): 10s", " Total code changes:    0 lines added, 0 lines removed",
+		" Usage:                 0 input, 0 output, 0 cache read, 0 cache write", ""}, rows...) {
+		b.WriteString("\r\x1b[1B   " + r + "\x1b[K")
+	}
+	b.WriteString("\x1b[50;1H")
+	panel := filepath.Join(t.TempDir(), "usage-200x50.bin")
+	if err := os.WriteFile(panel, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return panel
+}
+
+// A Claude Enterprise account with a five-hour window only, idle: its
+// panel draws no window, Anthropic leaving each out until the request that
+// starts it, at most the plan's credit. It was told as the panel's words,
+// and Claude Code's banner above them was the card's error ("Claude Code's
+// usage showed no usage figures: …magpie-claude-work…", koohoko5924,
+// v0.1.3057). It is told as no window started.
+func TestShimReadsUsageWithNoWindow(t *testing.T) {
+	for name, rows := range map[string][]string{
+		"none":                {" Esc to cancel"},
+		"credit":              {" Usage credits", " ████▌" + strings.Repeat(" ", 46) + "12% used", " Resets Dec 1 (Asia/Shanghai)", "", " Esc to cancel"},
+		"what's contributing": {" What's contributing to your usage?", " Approximate · sessions on this machine only", "", " Esc to cancel"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := runShim(t, []string{"FAKE_USAGE=" + usagePanel200(t, rows...), "FAKE_USAGE_BANNER=0"},
+				append([]string{fakePath(t)}, pArgs...), []string{`raw:{"type":"command","command":"/usage"}`}, 2)
+			if r := out[1]; r["type"] != "result" || r["is_error"] != false || r["result"] != NoUsageWindow {
+				t.Fatalf("told %v", r)
+			}
+		})
+	}
+}
+
+// Anthropic turning the usage page's requests away for a while is a
+// failure to load, told with the panel's own words, retried once: read as
+// a panel with no window, its reason was lost. The banner above the panel
+// is never the reason (koohoko5924).
+func TestShimToldWhyUsageFailed(t *testing.T) {
+	for _, why := range []string{
+		"Failed to load usage data",
+		"Claude is temporarily limiting requests to the usage page (not your usage limit). Try again in a moment.",
+		"Usage endpoint is rate limited until 12:11am.",
+	} {
+		t.Run(why, func(t *testing.T) {
+			failed := usagePanel200(t, " Error: "+why, "", " r to retry · Esc to cancel")
+			out := runShim(t, []string{"FAKE_USAGE=" + failed, "FAKE_USAGE_FIRST=" + failed, "FAKE_USAGE_THEN=retry-fails", "FAKE_USAGE_BANNER=0"},
+				append([]string{fakePath(t)}, pArgs...), []string{`raw:{"type":"command","command":"/usage"}`}, 2)
+			want := "/usage couldn't load the plan's usage: Error: " + why
+			if r := out[1]; r["type"] != "result" || r["is_error"] != true || r["result"] != want {
+				t.Fatalf("told %v, want %q", r, want)
+			}
+		})
+	}
+}
+
+func TestUsageWhy(t *testing.T) {
+	banner := "▐▛███▜▌ Claude Code v2.1.316 ▘▘ ▝▝ /private/var/folders/3d/x/T/magpie-claude-work-501 ──── ❯ /usage ──── "
+	for screen, want := range map[string]string{
+		banner + "Settings Status Config Usage Stats Session Total cost: $0.0000 Usage: 0 input, 0 output, 0 cache read, 0 cache write Error: Failed to load usage data r to retry · Esc to cancel":            "Error: Failed to load usage data",
+		banner + "Settings Status Config Usage Stats Session Total cost: $1.20 Total code changes: 403 lines added, 2 lines removed Usage: 9 input, 0 output, 0 cache read, 0 cache write Loading usage data…": "Settings Status Config Usage Stats Session Loading usage data…",
+		"no panel at all": "no panel at all",
+	} {
+		if got := usageWhy(screen); got != want {
+			t.Errorf("usageWhy(%q) = %q, want %q", screen, got, want)
+		}
+	}
+}
+
+func TestUsageNoWindow(t *testing.T) {
+	tab := "Settings Status Config Usage Stats Session Total cost: $0.0000 Usage: 0 input, 0 output, 0 cache read, 0 cache write "
+	for screen, want := range map[string]bool{
+		tab + "Esc to cancel": true,
+		tab + "Usage credits ██ 12% used Resets Dec 1 Esc to cancel":            true,
+		tab + "Current session ██ 12% used Resets 7pm Esc to cancel":            false,
+		tab + "Current week (all models) █ 3% used Esc to cancel":               false,
+		tab + "Loading usage data…":                                             false,
+		tab + "Error: Usage endpoint is rate limited until 12:11am. r to retry": false,
+		tab + "Refreshing…":                                               false,
+		tab + "Spend limit $50 Esc to cancel":                             false,
+		"Settings Usage /usage is only available for subscription plans.": false,
+		"▐▛███▜▌ Claude Code v2.1.316 /private/var/folders/3d/x/T/magpie-claude-work-501": false,
+	} {
+		if got := usageNoWindow(screen); got != want {
+			t.Errorf("usageNoWindow(%q) = %v, want %v", screen, got, want)
+		}
 	}
 }
 

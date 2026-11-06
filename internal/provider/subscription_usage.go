@@ -97,6 +97,10 @@ type QuotaWindow struct {
 	// CapID is, beside Capped, how the window is known to a cap of its
 	// own (WindowCapID), for the GUI to set and show one.
 	CapID string `json:"capId,omitempty"`
+	// OwnCap is set beside Capped on a window set aside: only a cap the
+	// user set on it itself holds the account there (WindowCaps.own),
+	// never the account's, and the GUI offers none new.
+	OwnCap bool `json:"ownCap,omitempty"`
 	// Holds is what the whole window holds, reckoned from magpie's own
 	// calls through the account (usage.WithWindowHolds), for the GUI and,
 	// through ReckonHolds, magpie quota --json and /v1/magpie/quotas
@@ -757,14 +761,35 @@ var claudeAsked atomic.Int64
 // in one wall-clock tick. tried and wait still schedule the next /usage.
 var claudeAskGeneration atomic.Uint64
 
-func markClaudeUsageAsked() {
+// claudeEveryAsked is the ask generation of the user's last refresh of
+// every allowance at once (AskEveryClaudeUsage): a saved account read
+// before it (claudeUsageEntry.asked) is read again, as its card's refresh
+// would read it (#5380), by a read that starts within claudeEveryFor of
+// the ask (claudeEveryAt): one the 30-second floor put off isn't run by a
+// timed read long after.
+var (
+	claudeEveryAsked atomic.Uint64
+	claudeEveryAt    atomic.Int64
+)
+
+const claudeEveryFor = 2 * time.Minute
+
+func markClaudeUsageAsked() { markClaudeAsk(false) }
+
+// markClaudeAsk is an ask of Claude's usage; every, the user's refresh of
+// every allowance, whose saved accounts are read too.
+func markClaudeAsk(every bool) {
 	// Serialize the ask with both caches' snapshots and publications:
 	// neither may observe the old generation, then publish after this ask.
 	// When both locks are needed, the subscription cache comes first.
 	subscriptionUsageCache.Lock()
 	loginUsageCache.Lock()
-	claudeAsked.Store(time.Now().UnixNano())
-	claudeAskGeneration.Add(1)
+	at := time.Now().UnixNano()
+	claudeAsked.Store(at)
+	if g := claudeAskGeneration.Add(1); every {
+		claudeEveryAt.Store(at)
+		claudeEveryAsked.Store(g)
+	}
 	loginUsageCache.Unlock()
 	subscriptionUsageCache.Unlock()
 }
@@ -773,8 +798,21 @@ func markClaudeUsageAsked() {
 // Usage page, refreshing it, `magpie quota` — so Claude Code's /usage is
 // run at once rather than when the next unasked reading is due
 // (claudeUsageWait); the next SubscriptionUsage waits for it.
-func AskClaudeUsage() {
-	markClaudeUsageAsked()
+func AskClaudeUsage() { askClaudeUsage(false) }
+
+// AskEveryClaudeUsage is the user refreshing every allowance by hand: the
+// tray panel's or the Usage page's Refresh, routing's read of the
+// allowances, the TUI's r (#5380: the panel said "Allowances refreshed"
+// while each saved Claude account kept its old reading, which only its
+// own card's refresh read again). As AskClaudeUsage, and each saved
+// Claude account's /usage is run too, as its card's refresh runs it, the
+// 30-second floor and all. Opening the page, its timer and `magpie
+// quota` ask with AskClaudeUsage, which starts no saved account's Claude
+// Code (savedRefresh).
+func AskEveryClaudeUsage() { askClaudeUsage(true) }
+
+func askClaudeUsage(every bool) {
+	markClaudeAsk(every)
 	AskUsage()
 	l := &loginUsageCache
 	l.Lock()
@@ -811,11 +849,12 @@ func AskUsage() {
 // (active) is read when the user asked since it last was, when the last
 // reading's claudeUsageWait (claudeNearOutWait near out) is up and Claude
 // Code was used since, or when Claude Code was refused for its limit
-// since. A saved
-// account is read only when its card is refreshed (savedRefresh), or when
-// the switch off a spent account has no reading of it (spareRead), or
-// when the keep-alive runs Claude Code on it (keepingAlive), by
-// Claude Code run in the account's own config directory
+// since. A saved account is read only when its card is refreshed
+// (savedRefresh) or every allowance was refreshed by hand since it was
+// read (AskEveryClaudeUsage), or when the switch off a spent account
+// has no reading of it (spareRead), or when the keep-alive runs Claude
+// Code on it (keepingAlive), by Claude Code run in the account's own
+// config directory
 // (readSavedClaudeUsage), Claude Code's own sign-in left as it is (#1630).
 // Any other time it is what was kept.
 // magpie itself never asks Anthropic.
@@ -844,7 +883,10 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	if active {
 		alive = nil
 	}
-	read := ((active || savedRefresh(ctx, user)) && due || spare || alive != nil) && (now.Sub(e.tried) >= claudeAskFloor || alive != nil) && !holding(ctx)
+	// every allowance refreshed by hand since this saved account's last
+	// read (AskEveryClaudeUsage), as its own card's refresh would
+	every := !active && claudeEveryAsked.Load() > e.asked && now.Sub(time.Unix(0, claudeEveryAt.Load())) < claudeEveryFor
+	read := ((active || savedRefresh(ctx, user) || every) && due || spare || alive != nil) && (now.Sub(e.tried) >= claudeAskFloor || alive != nil) && !holding(ctx)
 	c.Lock()
 	// one reading an ask or a wait, its first caller's; the others keep
 	// to it
@@ -863,7 +905,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	heard := e.ws != nil && now.Sub(e.heard) < claudeHeard
 	if !read {
 		switch {
-		case ok && e.err != nil && !(heard && !claudeUsageDenied.MatchString(e.err.Error())):
+		case ok && e.err != nil && !(heard && !claudeDenied(e.err.Error())):
 			return []QuotaWindow{}, e.err
 		case ok && e.ws != nil:
 			return e.windows(now), nil
@@ -907,7 +949,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 		if f, ok := c.m[key]; ok {
 			// A failed read cannot establish that an account refusal cleared.
 			// A successful reading or a new header clears it instead.
-			if f.err != nil && claudeUsageDenied.MatchString(f.err.Error()) && !claudeUsageDenied.MatchString(err.Error()) {
+			if f.err != nil && claudeDenied(f.err.Error()) && !claudeDenied(err.Error()) {
 				err = f.err
 			}
 			if f.tried.Equal(now) {
@@ -917,7 +959,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 			e = f // headers received while /usage ran are newer than e
 		}
 		c.Unlock()
-		if e.ws != nil && time.Since(e.heard) < claudeHeard && !claudeUsageDenied.MatchString(err.Error()) {
+		if e.ws != nil && time.Since(e.heard) < claudeHeard && !claudeDenied(err.Error()) {
 			return e.windows(time.Now()), nil // a fresh header stands unless the account was refused
 		}
 		return ws, err
@@ -942,7 +984,8 @@ var (
 )
 
 // savedRefresh says ctx is the refresh of the card of the saved Claude
-// account user, the one ask that runs Claude Code for a saved account. The
+// account user, one ask that runs Claude Code for a saved account; the
+// other is the user's refresh of every allowance (AskEveryClaudeUsage). The
 // Usage page opened, its timer, `magpie quota` and routing keep to what
 // was read: a run in every saved account's directory for each of them
 // would start Claude Code once per account.

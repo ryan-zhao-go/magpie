@@ -846,6 +846,7 @@ func hashes(b backup.Bundle) map[string]string {
 	ps := slices.Clone(b.Providers)
 	for i := range ps { // this computer's own: kept by Mirror, never synced
 		ps[i].KeepLogin, ps[i].KeepLoginAs, ps[i].SwitchOnly, ps[i].RestartApp = false, "", false, false
+		ps[i].KeepSelf = false
 	}
 	providers := []any{ps, b.Icons, b.Groups}
 	if b.Searches != nil && len(*b.Searches) > 0 { // as before them, without one
@@ -864,6 +865,11 @@ func hashes(b backup.Bundle) map[string]string {
 	if lib != nil && lib.Subagents != nil && len(*lib.Subagents) == 0 { // as before them, without one
 		c := *lib
 		c.Subagents = nil
+		lib = &c
+	}
+	if lib != nil && lib.Hooks != nil && len(*lib.Hooks) == 0 { // as before them, without one
+		c := *lib
+		c.Hooks = nil
 		lib = &c
 	}
 	out := map[string]string{
