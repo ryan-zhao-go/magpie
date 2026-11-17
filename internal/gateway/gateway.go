@@ -2324,6 +2324,11 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 			return
 		}
 		noteAsked(r.Context(), model)
+		// service_tier "fast", Codex's older word for its Fast, in the
+		// word Codex sends it in (fastTier, Archivemylife on X)
+		if from == provider.Responses || from == provider.Chat {
+			body = fastTier(body)
+		}
 		// Qoder 1.1.82 and later name no session: the one of its own
 		// session files the request holds the prompts of (qoder_session.go)
 		r = qoderSession(r, from, body)
@@ -3612,6 +3617,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	wentTier := ""   // the service tier the last try went out at (noteWireTier, #1784)
 	where := ""      // the last try's provider.Where, for the usage
 	again := 0       // times the last one left has been tried again
+	planAgain := 0   // times a group's member was asked again in place for the Qwen Token Plan's concurrency 429 (qwenPlanBusy)
 	resealed := 0    // what of the conversation another account sealed was taken out: its reasoning, then its compaction
 	repicked := 0    // times Copilot's Auto was asked again for a model the account is served
 	floored := false // the reply's length raised to what the provider takes
@@ -3735,6 +3741,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	}()
 	nearBehind := map[string]bool{} // accounts near their cap moved behind the rest once
 	var nearInKey time.Duration     // the key's slot waited for before an account's turn near its cap
+	// onWay takes back a turn counted out on its account from its
+	// near-cap check (lanes.plan) once its lane counts it, or it leaves
+	var onWay func()
+	defer func() {
+		if onWay != nil {
+			onWay()
+		}
+	}()
 	for i := 0; i < len(cands); i++ {
 		if failedRow != nil {
 			failedRow()
@@ -3801,7 +3815,38 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			failTo(w, kept, from, call.Status, cmp.Or(msg, call.Error))
 			break
 		}
-		if used, ahead, near := s.nearCapOf(c, time.Now()); near && aff.Why != "strict" && (len(cands) > 1 || userCapped(c)) && capHeld(c.p, c.p, c.model, time.Now()) == nil {
+		if onWay != nil {
+			onWay()
+			onWay = nil
+		}
+		var nearUsed, nearAhead float64
+		var near bool
+		if _, _, watched := capWatched(c); watched {
+			// a turn found not near its cap is out on the account from
+			// its check, not from its lane, and the check and that count
+			// are one step: turns of sessions sent together each checked
+			// before any took its lane, saw none of the others, and went
+			// past the cap together (#6958: 93% of a 90% cap). The key's
+			// slot is taken first, as the near path below takes it, so a
+			// turn counted out never waits for a key slot a turn near the
+			// cap holds while it waits for the count to drop
+			waited, err := keySlot(r.Context())
+			nearInKey += waited
+			if err != nil {
+				call.Status, call.Error = canceled(r.Context())
+				break
+			}
+			s.nearCap.check.Lock()
+			nearUsed, nearAhead, near = s.nearCapOf(c, time.Now())
+			if !near {
+				onWay = s.lanes.plan(c.who())
+			}
+			s.nearCap.check.Unlock()
+			if nearChecked != nil {
+				nearChecked(near)
+			}
+		}
+		if near && aff.Why != "strict" && (len(cands) > 1 || userCapped(c)) && capHeld(c.p, c.p, c.model, time.Now()) == nil {
 			// within nearCapPoints of its usage cap, the account takes one
 			// turn at a time (dyzdyz010 on Discord): busy, the turn goes to
 			// the next one first, this one kept behind them, else waits for
@@ -3872,7 +3917,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				held = true
 			}
 			_, ended, _ := s.lanes.out(c.who())
-			nearCapAgain(r.Context(), c, used, ahead, held, ended)
+			nearCapAgain(r.Context(), c, nearUsed, nearAhead, held, ended)
 			nearDone = done
 			if h := capHeld(c.p, c.p, c.model, time.Now()); h != nil {
 				nearDone()
@@ -4436,6 +4481,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					mate, handed.who, handed.release = m, m.who(), rel
 					return true, time.Time{}
 				})
+			}
+			if err == nil {
+				// the reply's reading has the turns come back by now
+				// (turnSpends), and its lane counts it
+				s.lanes.began(c.who())
+				if onWay != nil {
+					onWay()
+					onWay = nil
+				}
 			}
 			if errors.Is(err, errMoved) {
 				// nothing was sent, and nobody failed: the one with room is
@@ -5168,6 +5222,26 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			small, smallW = elsewhereWeighed(small, smallW, c)
 			last = i == len(cands)-1
 		}
+		if wait, ok := passingFor(c, hw.code(), hw.header, hw.errBody(), planAgain); ok && !protected && !last && !hw.passing && !hw.turnedAway && hw.failed() && qwenPlanBusy(c.p, hw.code(), hw.errBody()) && !kept.tooQuiet(wait) && !kept.outlives(wait) {
+			// the Qwen Token Plan turned the request away for its
+			// concurrency, its quota far from used (pelikanade on X): the
+			// same account is asked again after a jittered moment, a few
+			// times, before the group moves on to its next member, the
+			// account resting then as for a rate limit (dashScopeRate)
+			try.Fail, try.Again = failRate, wait.Milliseconds()
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+			skipped = append(skipped, c.label()+": "+call.Error)
+			planAgain++
+			if pauseUntilReaddressed(r.Context(), wait, readdressedOf([]candidate{c})) {
+				i--
+				continue
+			}
+			call.Status, call.Error = canceled(r.Context())
+			try.Gone = true
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+			break
+		}
+		planAgain = 0
 		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !protected && !last && hw.failed() && spentAfter(cands[i+1:]) {
 			// the others left are out of their allowance (Discord, waroy: a
 			// Codex account run out, Grok busy a moment): this one is the
@@ -5405,7 +5479,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				forbade = append(forbade, forbidden{c: c, rest: rest, try: at, words: words5xx})
 			}
 			skipped = append(skipped, c.label()+": "+call.Error)
-			if waitsOf(c.patience, patienceFallback) > 0 && !hw.turnedAway && busy(hw.code(), hw.errBody()) && !routedThere(hw.header) {
+			if waitsOf(c.patience, patienceFallback) > 0 && !hw.turnedAway && busyFor(c, hw.code(), hw.errBody()) && !routedThere(hw.header) {
 				busyNow = noteBusy(busyNow, c, hw.header)
 			}
 			continue
@@ -5422,9 +5496,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// its allowance, asked only as the one back soonest, isn't: the
 		// members before it were asked again as the last that may answer
 		// (spentAfter) and the agent is told theirs
-		lastSpent := last && isGroup && len(busyNow) > 0 && !hw.passing && hw.failed() && !busy(hw.code(), hw.errBody()) &&
+		lastSpent := last && isGroup && len(busyNow) > 0 && !hw.passing && hw.failed() && !busyFor(c, hw.code(), hw.errBody()) &&
 			slices.Contains([]string{failQuota, failCredit}, failure(hw.code(), hw.errBody())) && !spentAfter([]candidate{c})
-		if _, same := passing(hw.code(), hw.header, hw.errBody(), again); last && patience > 0 && !protected && !sameRefusal && !hw.turnedAway && !hw.refused && hw.failed() && (busy(hw.code(), hw.errBody()) && (!routedThere(hw.header) || len(busyNow) > 0) || lastSpent) &&
+		if _, same := passingFor(c, hw.code(), hw.header, hw.errBody(), again); last && patience > 0 && !protected && !sameRefusal && !hw.turnedAway && !hw.refused && hw.failed() && (busyFor(c, hw.code(), hw.errBody()) && (!routedThere(hw.header) || len(busyNow) > 0) || lastSpent) &&
 			(isGroup || !codexReset(hw.code(), hw.errBody())) &&
 			(len(busyNow) > 0 || waitsOf(c.patience, patienceFallback) > 0 && !same) {
 			// every member has failed, each in a way that passes — busy,
@@ -5476,7 +5550,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				break
 			}
 		}
-		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) && !kept.outlives(wait) {
+		if wait, ok := passingFor(c, hw.code(), hw.header, hw.errBody(), again); ok && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) && !kept.outlives(wait) {
 			// nobody else is left: the same one again, after a moment (not
 			// what Antigravity turned away: it turns it away again; nor
 			// once the group's patience is spent)
