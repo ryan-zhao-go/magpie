@@ -294,4 +294,3 @@ git rev-parse fork/feature/answer-timeout
 ```
 
 Expected: local and fork revisions match and the worktree is clean. Then inspect the fork release workflow run for that revision and report whether publication is queued, running, or successful without changing the workflow.
-
