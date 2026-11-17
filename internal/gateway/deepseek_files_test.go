@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 const responsesWholeOK = `{"id":"resp_1","object":"response","status":"completed","model":"m1","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
@@ -449,4 +450,105 @@ func dsWaitingFlights() map[string]*dsFlight {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return maps.Clone(st.flights)
+}
+
+// A row says what DeepSeek's image files saved the request: the inline
+// image its body left out, less the upload that put it up. The turn that
+// uploads keeps the image's base64 out and pays for the upload; the next
+// turn only keeps it out. Each row's bytes up and saved add up to what
+// the turn would have sent inline (faithleysath, matrix0487 on Discord).
+func TestDeepSeekImageFilesSavedInRow(t *testing.T) {
+	s, u := dsSetup(t)
+	img := base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\n" + strings.Repeat("an image's pixels ", 3000)))
+	path, upPath, body := dsBody("chat", "deepseek/deepseek-flash", img)
+	var rows []usage.Record
+	for turn := range 2 {
+		if code, reply := postTo(t, s, path, body); code != 200 {
+			t.Fatalf("turn %d: %d %s", turn, code, reply)
+		}
+		if strings.Contains(u.last(upPath), img) {
+			t.Fatalf("turn %d went inline", turn)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			rows = rows[:0]
+			for _, r := range usage.Load(time.Time{}) {
+				if r.Provider == "deepseek" && !r.HandedOn {
+					rows = append(rows, r)
+				}
+			}
+			if len(rows) == turn+1 || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if len(rows) != turn+1 {
+			t.Fatalf("turn %d: rows %+v", turn, rows)
+		}
+	}
+	if len(u.uploaded()) != 1 {
+		t.Fatalf("uploads %v", u.uploaded())
+	}
+	upload := len(img) / 4 * 3
+	first, second := rows[0], rows[1]
+	if second.ImageFilesSaved < len(img)*9/10 || second.ImageFilesSaved > len(img)+200 { // the base64, its data: URL and block, less the file block
+		t.Fatalf("the second turn saved %d of an image of %d base64 bytes", second.ImageFilesSaved, len(img))
+	}
+	if first.ImageFilesSaved != second.ImageFilesSaved-upload {
+		t.Fatalf("the first turn saved %d; the second %d, less the upload's %d", first.ImageFilesSaved, second.ImageFilesSaved, upload)
+	}
+	if a, b := first.UpBytes+first.ImageFilesSaved, second.UpBytes+second.ImageFilesSaved; a != b || a <= len(img) {
+		t.Fatalf("up and saved come to %d and %d, the inline turn's bytes (image %d)", a, b, len(img))
+	}
+}
+
+// A row says how many images went by file beside what they saved
+// (matrix0487 on Discord: "10 MB（3 张）"): each inline image block the
+// body named by file id, one sent twice counted twice as its bytes are,
+// on the turn that uploads them and the turn after; a request with no
+// image says none.
+func TestDeepSeekImageFilesCountedInRow(t *testing.T) {
+	s, u := dsSetup(t)
+	block := func(img string) string {
+		return `{"type":"image_url","image_url":{"url":"data:image/png;base64,` + img + `"}}`
+	}
+	body := `{"model":"deepseek/deepseek-flash","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"what are they"},` +
+		block(dsPNG1) + `,` + block(dsPNG2) + `]},{"role":"assistant","content":"two images"},{"role":"user","content":[{"type":"text","text":"and again"},` + block(dsPNG1) + `]}]}`
+	plain := `{"model":"deepseek/deepseek-flash","stream":false,"messages":[{"role":"user","content":"no image"}]}`
+	rowsOf := func(n int) []usage.Record {
+		var rows []usage.Record
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			rows = rows[:0]
+			for _, r := range usage.Load(time.Time{}) {
+				if r.Provider == "deepseek" && !r.HandedOn {
+					rows = append(rows, r)
+				}
+			}
+			if len(rows) >= n || time.Now().After(deadline) {
+				return rows
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	for turn, b := range []string{body, body, plain} {
+		if code, reply := postTo(t, s, "/v1/chat/completions", b); code != 200 {
+			t.Fatalf("turn %d: %d %s", turn, code, reply)
+		}
+		if got := u.last("/v1/chat/completions"); turn < 2 && (strings.Contains(got, dsPNG1) || strings.Contains(got, dsPNG2)) {
+			t.Fatalf("turn %d went inline: %s", turn, got)
+		}
+		if rows := rowsOf(turn + 1); len(rows) != turn+1 {
+			t.Fatalf("turn %d: rows %+v", turn, rows)
+		}
+	}
+	rows := rowsOf(3)
+	for i, want := range []int{3, 3, 0} {
+		if rows[i].ImageFiles != want {
+			t.Fatalf("turn %d: %d images by file, want %d (saved %d)", i, rows[i].ImageFiles, want, rows[i].ImageFilesSaved)
+		}
+	}
+	if rows[1].ImageFilesSaved <= 0 {
+		t.Fatalf("the second turn saved %d", rows[1].ImageFilesSaved)
+	}
 }
