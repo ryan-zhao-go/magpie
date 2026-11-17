@@ -2,7 +2,7 @@ name: Fork release
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '47 * * * *'
   workflow_dispatch:
     inputs:
       verify_only:
