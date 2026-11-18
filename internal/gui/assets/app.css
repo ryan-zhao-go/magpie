@@ -224,6 +224,7 @@ code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code
 .row .field .ic-stack .disc > .ic { width: 11px !important; height: 11px !important; }
 .row .field .ic-stack .disc + .disc { margin-left: -4px; }
 .ic.generic svg { width: 100%; height: 100%; }
+.ic.anthropic-mark svg { width: 100%; height: 100%; display: block; }
 
 /* ---- header --------------------------------------------------------------- */
 .top { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; height: 46px; flex: none; position: relative; }
@@ -520,9 +521,10 @@ body.side-nav #nav button.has-dot.can-fold::after { right: 28px; }
 .nav-sl:first-of-type { padding-top: 2px; }
 /* Settings' tabs, over its button at the sidebar's foot (app.js navSubs),
    close to the button they come from; the foot takes more of a short
-   sidebar while they show */
+   sidebar while they show (.with-sub, set by app.js: Safari before 15.4
+   can't parse :has()) */
 .side-foot > .nav-sub { margin: 6px 0 2px 16px; }
-.side-foot:has(> .nav-sub) { max-height: 80%; }
+.side-foot.with-sub { max-height: 80%; }
 .nav-sub::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 1px; background: var(--line); }
 /* rows keep their size while the list unrolls or folds: squeezed, a strip
    drawn again then (Installed gets its count) marked the selection a third
@@ -1620,6 +1622,16 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-spd-h:hover, .led-spd-h.on { color: var(--fg); }
 .led-spd th[aria-sort="descending"] .led-spd-h::after { content: " ↓"; }
 .led-spd th[aria-sort="ascending"] .led-spd-h::after { content: " ↑"; }
+.led-spd-by .opt { height: 20px; padding: 0 9px; font-size: 11px; }
+.led-spd .led-spd-prov { overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 400; color: var(--muted); }
+.led-spd.by-prov tbody td { vertical-align: top; }
+.led-spd.by-prov td.nm { min-width: 112px; }
+.led-spd th.act, .led-spd td.act { width: 1px; padding-left: 8px; }
+.led-spd td.off { color: var(--amber); }
+/* always there, quiet until its row is pointed at (skingstyle48487: a
+   button shown only on hover went unfound) */
+.led-spd-check { height: 20px; padding: 0 2px; font-size: 11px; color: var(--muted); }
+.led-spd tr:hover .led-spd-check, .led-spd-check:focus-visible { color: var(--ctl-fg); }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -3355,7 +3367,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    key squeezed by them on a narrow window slid its copy button under the
    pointer that came to drag the row */
 #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { flex-shrink: 8; }
-#gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; }
+/* On a narrow window they keep that room when not hovered, only faded
+   out: four of them (key-redact made four) took ~90px on hover, the key
+   gave it up and its copy button slid under the pointer that came to
+   drag the row, so the drag never started (#6268) */
+@media (min-width: 521px) { #gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; } }
 /* the MCP servers a key held to some may use: cut, and gives way first */
 #gatewayKeys .amodels.key-mcp { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* a read-only key's tag, always shown, never a button */
@@ -3753,11 +3769,25 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
 .editor .proxy-row input.proxy-url.off { display: none; }
 .editor .proxy-row .gone { display: none; }
 .editor .proxy-row .proxy-saved { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.editor .proxy-row .proxy-test { flex: none; }
+.editor .proxy-row .proxy-saved[hidden] + .proxy-test { display: none; }
+.editor .proxy-pick .hint.err { color: var(--red); }
 .saved-proxy .sub { overflow-wrap: anywhere; }
 .proxy-form { flex-wrap: wrap; }
 .proxy-form .proxy-controls { justify-content: flex-end; flex: 1 1 100%; }
 .proxy-form .proxy-credential { flex: 1 1 10rem; min-width: 0; }
 .proxy-form .sub.err { flex: 1 1 100%; }
+/* an SSH server's form: Proxy | SSH over its fields, and its key and host
+   key folded under Advanced */
+.proxy-form { gap: 8px; }
+.proxy-form .proxy-kind { flex: none; }
+.proxy-form .proxy-advanced { flex: 1 1 100%; min-width: 0; }
+.proxy-advanced summary { margin-left: 0; }
+.proxy-advanced .inner { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.proxy-advanced textarea.proxy-key { width: 100%; max-width: 100%; box-sizing: border-box; min-height: 64px; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: inherit; font: 11.5px/1.45 var(--mono, ui-monospace, monospace); resize: vertical; outline: none; }
+.proxy-advanced textarea.proxy-key:focus { border-color: var(--accent); }
+.proxy-hostkey { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.proxy-hostkey .sub { min-width: 0; overflow-wrap: anywhere; font: 11.5px/1.45 var(--mono, ui-monospace, monospace); }
 .editor :is(input.concurrency, input.queue-limit, input.queue-wait)[type] { width: 12em; max-width: 100%; }
 .editor input[type="number"] { -moz-appearance: textfield; }
 .editor input[type="number"]::-webkit-inner-spin-button, .editor input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -3885,20 +3915,21 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
    Connect's five APIs on a narrow one, and Usage → Sessions' agents,
    which #929 left widening the whole page until its last agent's
    filter was only reachable by dragging the page sideways, and Plugins'
-   kinds on GitHub, wider than a 420px window in Japanese */
-.segs.regions, .connect .segs, .pm-bar .segs { max-width: 100%; overflow-x: auto; }
+   kinds on GitHub, wider than a 420px window in Japanese, and Usage's
+   chart metrics, wider than a 375px phone in German (#5869) */
+.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs { max-width: 100%; overflow-x: auto; }
 /* no scrollbar-width here: Chromium (WebView2) then drops every
    ::-webkit-scrollbar rule and draws Windows' classic bar, arrows and all,
    under the strip; the app's thin thumb instead, slimmer still */
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { height: 6px; }
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar { height: 6px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
 /* on a Mac they scroll with no bar, as a Mac's own tab strips do: the
    system's overlay bar showed over the options' lower half for a moment
    after each scroll, and a click there went to the bar, which paged the
    strip sideways and picked nothing (#1620) */
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs) { scrollbar-width: none; }
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { display: none; }
-.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt { flex: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs) { scrollbar-width: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar { display: none; }
+.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt, .led-bar .segs .opt { flex: none; }
 /* a custom provider's five Base URL APIs wrap to a second row where the
    editor is too narrow for them (#1346); the thumb follows the row */
 .segs.base-apis { max-width: 100%; flex-wrap: wrap; }
@@ -3930,16 +3961,16 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
    reads as a control and not as a disabled hint (sylvenPR on X, a 5px ▸ in
    the muted grey); a pointer and a brighter label under it. The chevron
    starts where the fields do (--ed-at), no padding before it. */
-.editor .more summary { font-size: 12px; line-height: 18px; color: var(--fg-2); list-style: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; margin-left: var(--ed-at, 86px); border-radius: 4px; cursor: pointer; transition: color .12s; }
-.editor .more summary::-webkit-details-marker { display: none; }
-.editor .more summary::before { content: ""; flex: none; width: 10px; height: 10px; background: var(--muted); transition: transform .24s var(--ease-out), background-color .12s;
+.editor .more summary, .proxy-advanced summary { font-size: 12px; line-height: 18px; color: var(--fg-2); list-style: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; margin-left: var(--ed-at, 86px); border-radius: 4px; cursor: pointer; transition: color .12s; }
+.editor .more summary::-webkit-details-marker, .proxy-advanced summary::-webkit-details-marker { display: none; }
+.editor .more summary::before, .proxy-advanced summary::before { content: ""; flex: none; width: 10px; height: 10px; background: var(--muted); transition: transform .24s var(--ease-out), background-color .12s;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3.6 1.6 7 5 3.6 8.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3.6 1.6 7 5 3.6 8.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; }
-.editor .more[open]:not(.closing) summary::before { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .editor .more summary, .editor .more summary::before { transition: none; } }
-.editor .more summary:hover { color: var(--fg); }
-.editor .more summary:hover::before { background: var(--fg-2); }
-.editor .more summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.editor .more[open]:not(.closing) summary::before, .proxy-advanced[open] summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .editor .more summary, .editor .more summary::before, .proxy-advanced summary, .proxy-advanced summary::before { transition: none; } }
+.editor .more summary:hover, .proxy-advanced summary:hover { color: var(--fg); }
+.editor .more summary:hover::before, .proxy-advanced summary:hover::before { background: var(--fg-2); }
+.editor .more summary:focus-visible, .proxy-advanced summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* its labels are longer (Anthropic 地址, Responses-URL): their column takes
    the longest, on one line, rather than wrap a last 址 under it (#875) */
 .editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: first baseline; padding-top: 8px; }
@@ -4798,7 +4829,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .segs .thumb { border-radius: 6px; }
   body.web .segs .opt { height: 28px; padding: 0 11px; font-size: 13px; }
   body.web .segs .opt::after { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
-  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
+  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
   body.web .text { padding: 8px 10px; }
   body.web .copy { min-width: 44px; }
   body.web .fields { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 124px); }
@@ -5658,3 +5689,19 @@ body.linux .action-confirm::backdrop { -webkit-backdrop-filter: none; backdrop-f
 .field.ag-speed .v .bolts { display: inline-flex; }
 .field.ag-speed .v .bolts svg + svg { margin-left: -5px; }
 .field.ag-speed .ag-speed-by { color: var(--faint); font-weight: 400; white-space: pre; }
+
+/* the Usage speed card's check dialog (relaycheck.js) */
+.relay-check > p, .relay-parts { grid-column: 1 / -1; }
+.relay-parts { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin: 4px 0 12px; }
+.relay-part { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.relay-top { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.relay-sum { display: flex; flex-wrap: wrap; gap: 4px 16px; font-weight: 500; }
+.relay-mark { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.relay-mark.ok { background: var(--green); }
+.relay-mark.off { background: var(--amber); }
+.relay-mark.err { background: var(--red); }
+.relay-said { font-weight: 400; font-size: 12px; }
+.relay-line { padding-left: 15px; font-size: 12px; overflow-wrap: anywhere; }
+.relay-line.mono { font-family: var(--code); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-line.err, .relay-part.err { color: var(--red); }
+.relay-wait { font-size: 12px; }

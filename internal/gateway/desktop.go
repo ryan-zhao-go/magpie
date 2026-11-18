@@ -427,15 +427,36 @@ func claudeTier(id string) string {
 // Desktop's Claude Code asked for by Claude Code's own id, which magpie
 // doesn't serve: a subagent on a tier no model is tagged for, or on one a
 // model picked for two tiers isn't tagged with. "" when there is none.
+//
+// magpie's own id for a Claude model it listed Desktop that names no model
+// now (aliased: its provider removed, or its list without the model, and
+// the model no tier's pick) still says which Claude model the session is
+// on, and so its tier (aliasClaude). It went to the model the last turn of
+// any Desktop session ran on (movedGone): another provider's model for a
+// chat on Copilot's Opus, while another chat ran on that model (mdwsk88).
 func desktopTierTurn(asked string) string {
 	if !unserved(asked) || strings.Contains(asked, "/") {
 		return ""
 	}
 	t := claudeTier(asked)
 	if t == "" {
+		t = claudeTier(aliasClaude(asked))
+	}
+	if t == "" {
 		return ""
 	}
 	return DesktopTiers()[t]
+}
+
+// aliasClaude is the Claude model magpie's own id for one names
+// (claudeLooking: magpie-<n>.anthropic.claude-opus-5-5, with or without
+// Claude Code's "[1m]"), as Desktop's IC reads it; "" for any other id.
+func aliasClaude(id string) string {
+	if !magpieAliasAsked(id) || !strings.HasPrefix(id, "magpie-") {
+		return ""
+	}
+	_, m, _ := strings.Cut(strings.TrimSuffix(id, "[1m]"), desktopClaudeInfix)
+	return m
 }
 
 // desktopTierAsked says asked is the model the user picked for one of
@@ -517,6 +538,30 @@ func aliased(id string) (string, bool) {
 		for _, t := range DesktopTierNames {
 			if aliasNumber(desktopTierKey(e.ID, t)) == number {
 				return e.ID, true
+			}
+		}
+	}
+	// a model picked for one of Desktop's tiers that the catalog leaves
+	// out for now: its provider's list came back without it (Copilot's
+	// /models answered without its Claude models for an hour, mdwsk88),
+	// it was refused a while (copilotRefuses), or its picks wait for it.
+	// A session on it still names it, and it is still the user's pick: it
+	// is that model, sent to its provider as asked, not a model magpie
+	// doesn't serve, which went to the model another Desktop session ran
+	// on last (desktopMoveTo's movedGone). A group is listed while it is
+	// there, and one deleted goes nowhere (#6719), so a group's id is no
+	// pick here. A later tier's number is read by whichever tier, as the
+	// catalog's is above.
+	for _, id := range DesktopTiers() {
+		if id == "" || provider.IsGroupRef(id) {
+			continue
+		}
+		if aliasNumber(id) == number {
+			return id, true
+		}
+		for _, t := range DesktopTierNames {
+			if aliasNumber(desktopTierKey(id, t)) == number {
+				return id, true
 			}
 		}
 	}
@@ -635,6 +680,7 @@ func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) strin
 // answered by AgentRouter's GPT, read as magpie swapping the model).
 const (
 	movedTier       = "desktop-tier"        // Claude Code's own id of a tier: the model picked for it
+	movedSearch     = "desktop-search"      // Claude Code's WebSearch call: the model picked for haiku
 	movedCheck      = "desktop-check"       // Desktop's check that the gateway answers: its menu's model
 	movedCheckFirst = "desktop-check-first" // …or, with none chosen, the first model it lists
 	movedTitle      = "desktop-title"       // a short call without tools Desktop names a model for: the chat's
@@ -658,6 +704,11 @@ func desktopMove(asked string, body []byte, byClaudeCode, bySubagent bool) (stri
 func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (string, string) {
 	if asked == "" {
 		return asked, ""
+	}
+	if byClaudeCode && desktopSearchCall(body) {
+		if m := desktopSearchTier(); m != "" && m != asked {
+			return m, movedSearch
+		}
 	}
 	if m := desktopTierTurn(asked); m != "" {
 		return m, movedTier
@@ -1060,6 +1111,45 @@ func small(body []byte) bool {
 		MaxTokens int `json:"max_tokens"`
 	}
 	return json.Unmarshal(body, &v) == nil && v.MaxTokens > 0 && v.MaxTokens <= 4096
+}
+
+// desktopSearchHelper is a Desktop search taken by its served haiku pick,
+// so it is not a subagent's tool turn.
+func desktopSearchHelper(agent string, body []byte) bool {
+	return agent == "claude-desktop" && desktopSearchCall(body) && desktopSearchTier() != ""
+}
+
+// desktopSearchTier is the served pick for Desktop's haiku tier, or ""
+// when WebSearch keeps its existing routing.
+func desktopSearchTier() string {
+	m := DesktopTiers()["haiku"]
+	if m == "" || unserved(m) {
+		return ""
+	}
+	return m
+}
+
+// desktopSearchCall is Claude Code 2.1.321's WebSearch subrequest: only
+// the server search tool, forced by name. Desktop's gateway mode disables
+// GrowthBook, so its small-model flag defaults off and it asks on the
+// session's model even when haiku is picked.
+func desktopSearchCall(body []byte) bool {
+	if !bodyHas(body, `"tool_choice"`) || !bodyHas(body, `web_search_`) {
+		return false
+	}
+	var v struct {
+		Tools []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"tools"`
+		ToolChoice struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"tool_choice"`
+	}
+	return json.Unmarshal(body, &v) == nil && len(v.Tools) == 1 &&
+		strings.HasPrefix(v.Tools[0].Type, "web_search_") && v.Tools[0].Name == "web_search" &&
+		v.ToolChoice.Type == "tool" && v.ToolChoice.Name == "web_search"
 }
 
 // hasTools: the request offers the model tools (Anthropic's, Chat's and

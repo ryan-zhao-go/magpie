@@ -23,6 +23,7 @@ magpie.plugin("library", (ctx) => {
   let addingSet = false; // a new set being named
   let removingSet = null; // a set whose Remove was clicked once
   const extras = {};     // agent → its own additions as typed, while not saved
+  const projTexts = {};  // project dir → its own instructions as typed, while not saved
   const open = new Set(); // agents whose instructions row is open
   let probe = null;      // skills found at a source: { source, candidates, pick:Set, agents:Set }
   let probing = false;
@@ -49,6 +50,8 @@ magpie.plugin("library", (ctx) => {
     key: "M10 2.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4z M7.8 8.2 3 13 M4.5 11.5 6 13",
     person: "M8 3a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z M3.5 13.5c.6-2.4 2.3-3.6 4.5-3.6s3.9 1.2 4.5 3.6",
     back: "m9.5 4.5-3 3.5 3 3.5",
+    // an arrow turning back: a skill going back where it came from
+    putBack: "M6 3.5 3 6.5l3 3 M3 6.5h6.5a3.5 3.5 0 0 1 0 7H7",
     hook: "M10.5 2.5v6.5a3 3 0 0 1-6 0V7.5 M3 9l1.5-1.5L6 9",
     // a person with a second, smaller one it hands work to
     subagent: "M6 3a2.2 2.2 0 1 0 0 4.4A2.2 2.2 0 0 0 6 3z M2 13c.5-2.2 2-3.4 4-3.4s3.5 1.2 4 3.4 M11.5 7.5a1.5 1.5 0 1 0 0 .01 M10.2 12.5c.3-1.3 1.1-2 2.3-2s1.6.5 1.9 1.4",
@@ -2457,8 +2460,11 @@ magpie.plugin("library", (ctx) => {
     for (const [id, v] of Object.entries(texts)) if (setOf(id) && v !== setOf(id).text) out[id] = v;
     return out;
   }
+  function unsavedProjects() {
+    return Object.entries(projTexts).filter(([dir, v]) => { const p = lib.projects.find((x) => x.dir === dir); return p && v !== (p.instr || ""); });
+  }
   function dirty() {
-    if (Object.keys(unsavedTexts()).length) return true;
+    if (Object.keys(unsavedTexts()).length || unsavedProjects().length) return true;
     return Object.entries(extras).some(([id, v]) => v !== (lib.instructions.agents.find((a) => a.agent === id)?.extra || ""));
   }
 
@@ -2469,11 +2475,25 @@ magpie.plugin("library", (ctx) => {
     const ex = {};
     for (const [id, v] of Object.entries(extras)) if (v !== (lib.instructions.agents.find((a) => a.agent === id)?.extra || "")) ex[id] = v;
     if (Object.keys(ex).length) c.extra = ex;
-    if (!Object.keys(c).length) return;
-    if (await change("instructions/save", c)) {
+    const projs = unsavedProjects();
+    if (!Object.keys(c).length && !projs.length) return;
+    if (Object.keys(c).length && await change("instructions/save", c)) {
       for (const k of Object.keys(texts)) delete texts[k];
       for (const k of Object.keys(extras)) delete extras[k];
       render();
+    }
+    // a project's own: its first text goes to the agents the shared
+    // instructions are on for, as a project's first skill does
+    for (const [dir, v] of projs) {
+      const p = lib.projects.find((x) => x.dir === dir);
+      if (!p) continue;
+      const body = { dir, instr: v };
+      let agents = p.instrAgents || [];
+      if (!agents.length && v.trim()) agents = body.agents = projectInstrDefaults();
+      const done = !v.trim() ? t("{name}'s instructions are taken out of its files", { name: p.name })
+        : agents.length ? t("{name}'s instructions are in its files for {agents}", { name: p.name, agents: agents.map(nameOf).join(", ") })
+        : t("{name}'s instructions are saved — pick the agents that read them", { name: p.name });
+      if (await change("projects/instructions", body, done)) { delete projTexts[dir]; render(); }
     }
   }
   async function discard(force = false) {
@@ -2481,6 +2501,7 @@ magpie.plugin("library", (ctx) => {
     if (force === true) { memOpen = null; memDraft = null; }
     for (const k of Object.keys(texts)) delete texts[k];
     for (const k of Object.keys(extras)) delete extras[k];
+    for (const k of Object.keys(projTexts)) delete projTexts[k];
     render();
   }
 
@@ -2525,6 +2546,9 @@ magpie.plugin("library", (ctx) => {
     const skip = shownAgents().filter((a) => !a.instructions && !a.asleep);
     if (skip.length) body.append(el("p", "lib-aside", t(skip.length > 1 ? "{agents} keep no user-wide instructions file." : "{agents} keeps no user-wide instructions file.", { agents: skip.map((a) => a.name).join(", ") })));
     body.append(...asleepAsides(rows.filter((a) => a.asleep)));
+    // a project's own, so the shared ones keep what holds everywhere
+    // (VictorHong1022 on X), as a project has skills of its own
+    if (!agentless()) renderProjects(body, "instructions");
     body.append(bar);
   }
 
@@ -5475,6 +5499,8 @@ magpie.plugin("library", (ctx) => {
     const line = [[t("Skills"), p.skills], [t("MCP servers"), p.mcp], [t("Hooks"), p.hooks], [t("Subagents"), p.subagents]]
       .filter(([, v]) => v?.length).map(([k, v]) => k + " " + v.length).join(" · ");
     if (line) who.append(el("div", "sub lib-plparts", line));
+    // synced in from another computer, its source not reached here yet
+    if (p.pending) who.append(el("div", "sub lib-plpending", t("Not fetched on this computer yet: Update tries again")));
     row.append(glyph(GLYPH.folder), who,
       agentChips(all, p.agents, chipsChange("plugins/agents", p.name, "plugins", (x) => pluginRow(x, all)), { all: true }),
       toggle(!p.off, t("Turn {name} on or off", { name: p.name }), (v) => change("plugins/on", { name: p.name, on: v },
@@ -6713,12 +6739,14 @@ magpie.plugin("library", (ctx) => {
 
   function renderProjects(body, kind) {
     const rh = el("div", "row-head");
-    rh.append(el("span", "label", kind === "skills" ? t("Project skills") : kind === "subagents" ? t("Project subagents") : t("Project servers")), el("span", "grow"));
+    rh.append(el("span", "label", kind === "skills" ? t("Project skills") : kind === "subagents" ? t("Project subagents") : kind === "instructions" ? t("Project instructions") : t("Project servers")), el("span", "grow"));
     if (!addingProject) rh.append(button(t("Add a project"), "action lib-updall", () => { addingProject = { dir: "" }; render(); }));
     body.append(rh);
     if (addingProject) body.append(addProjectCard(kind));
     if (!lib.projects.length && !addingProject) {
-      body.append(el("p", "lib-aside", kind === "subagents"
+      body.append(el("p", "lib-aside", kind === "instructions"
+        ? t("Give a project instructions of its own: magpie writes them into the AGENTS.md, CLAUDE.md or the like each agent reads there, leaving the rest of each file as it is.")
+        : kind === "subagents"
         ? t("Give a project's agents some of these subagents as the project's own: magpie writes them into its .claude/agents and the like, and keeps them out of git.")
         : kind === "mcp"
         ? t("Give a project's agents some of these servers as the project's own: magpie writes them into its {files}, leaving the rest of each file as it is.", { files: projectFiles() })
@@ -6767,7 +6795,7 @@ magpie.plugin("library", (ctx) => {
         addingProject = null;
         const p = lib.projects.find((x) => !was.has(x.dir));
         if (p) openProjects.add(p.dir);
-        status(kind === "subagents" ? t("{name} added — pick the subagents it gets", { name: p?.name || dir }) : kind === "mcp" ? t("{name} added — pick the servers it gets", { name: p?.name || dir }) : t("{name} added — pick the skills it gets", { name: p?.name || dir }), "ok");
+        status(kind === "instructions" ? t("{name} added — write its instructions", { name: p?.name || dir }) : kind === "subagents" ? t("{name} added — pick the subagents it gets", { name: p?.name || dir }) : kind === "mcp" ? t("{name} added — pick the servers it gets", { name: p?.name || dir }) : t("{name} added — pick the skills it gets", { name: p?.name || dir }), "ok");
       } catch (e) {
         a.busy = false;
         a.error = e.message;
@@ -6778,21 +6806,29 @@ magpie.plugin("library", (ctx) => {
   }
 
   function projectCard(p, kind) {
-    const mcp = kind === "mcp", sub = kind === "subagents";
+    const mcp = kind === "mcp", sub = kind === "subagents", ins = kind === "instructions";
     const card = el("div", "list lib-card lib-project" + (p.missing ? " missing" : ""));
     const isOpen = openProjects.has(p.dir);
     const head = el("div", "row lib-row click lib-projhead" + (isOpen ? " open" : ""));
     const who = el("div", "who");
     const nm = el("div", "name", p.name);
     if (p.missing) nm.append(tag(t("Folder is gone"), "warn"));
-    else if (p.copy && !mcp && !sub) nm.append(tag(t("Copies"), ""));
+    else if (p.copy && !mcp && !sub && !ins) nm.append(tag(t("Copies"), ""));
     who.append(nm);
     const src = el("div", "lib-src");
     src.append(pathLink(p.dir));
     who.append(src);
     const names = Object.keys((sub ? p.subagents : mcp ? p.servers : p.skills) || {}).sort();
     const pills = el("div", "lib-tags");
-    if (!isOpen) {
+    if (!isOpen && ins) {
+      const first = (projTexts[p.dir] ?? p.instr ?? "").split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "";
+      if (!first) pills.append(tag(t("No instructions yet"), "lib-unchecked"));
+      else {
+        pills.append(tag(first.length > 40 ? first.slice(0, 39) + "…" : first, "lib-dot"));
+        if (!(p.instrAgents || []).length) pills.append(tag(t("For no agent"), "lib-unchecked"));
+        if (projTexts[p.dir] !== undefined && projTexts[p.dir] !== (p.instr || "")) pills.append(tag(t("Not saved yet"), "warn"));
+      }
+    } else if (!isOpen) {
       for (const n of names.slice(0, 4)) pills.append(tag(n, "lib-dot"));
       if (names.length > 4) pills.append(tag("+" + (names.length - 4), ""));
       if (!names.length) pills.append(tag(sub ? t("No subagents yet") : mcp ? t("No servers yet") : t("No skills yet"), "lib-unchecked"));
@@ -6806,12 +6842,13 @@ magpie.plugin("library", (ctx) => {
     chev.append(svg(CHEV_R, 11, 1.7));
     head.append(glyph(GLYPH.folder), who, pills, acts, chev);
     head.onclick = () => { isOpen ? openProjects.delete(p.dir) : openProjects.add(p.dir); projectShown.delete(p.dir); render(); };
-    head.title = sub ? (isOpen ? t("Hide its subagents") : t("Pick the subagents it gets")) : mcp ? (isOpen ? t("Hide its servers") : t("Pick the servers it gets")) : isOpen ? t("Hide its skills") : t("Pick the skills it gets");
+    head.title = ins ? (isOpen ? t("Hide its instructions") : t("Write its instructions")) : sub ? (isOpen ? t("Hide its subagents") : t("Pick the subagents it gets")) : mcp ? (isOpen ? t("Hide its servers") : t("Pick the servers it gets")) : isOpen ? t("Hide its skills") : t("Pick the skills it gets");
     card.append(head);
     if (p.problems?.[""]) card.append(el("div", "lib-err", p.problems[""]));
     if (!isOpen) return card;
     if (mcp) return projectServers(p, card);
     if (sub) return projectSubagents(p, card);
+    if (ins) return projectInstructions(p, card);
 
     const opts = el("div", "lib-projopts");
     const copy = toggle(p.copy, t("Copy files instead of linking"), (on) =>
@@ -7037,6 +7074,53 @@ magpie.plugin("library", (ctx) => {
     return card;
   }
 
+  // The agents a project's first instructions are for: those here that
+  // read a project's instructions file and have the shared ones on, else
+  // every one of them here.
+  function projectInstrDefaults() {
+    const all = shownAgents().filter((a) => a.projectInstructions && !a.gone && !a.unseen && !a.asleep);
+    const on = all.filter((a) => (lib.instructions?.agents || []).some((x) => x.agent === a.id && x.on));
+    return (on.length ? on : all).map((a) => a.id);
+  }
+
+  // The project's card, open on the Instructions tab: its own text, saved
+  // with the page's Save, and the chips of the agents whose project file
+  // it is written into.
+  function projectInstructions(p, card) {
+    const det = el("div", "lib-detail lib-projinstr");
+    det.dataset.detail = "proj:" + p.dir;
+    const problem = p.problems?.instructions;
+    if (problem) det.append(el("div", "lib-err", problem));
+    const ta = el("textarea", "lib-text small");
+    ta.dataset.lib = "projinstr:" + p.dir;
+    ta.spellcheck = false;
+    ta.value = projTexts[p.dir] ?? p.instr ?? "";
+    ta.placeholder = t("What only this project needs — its stack, how to run its tests, what not to touch…");
+    ta.oninput = () => { projTexts[p.dir] = ta.value; renderSaveBars(); };
+    ta.onkeydown = (e) => { e.stopPropagation(); if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); saveInstructions(); } };
+    autosize(ta, 110);
+    det.append(ta);
+    const all = shownAgents().filter((a) => a.projectInstructions);
+    const on = (p.instrAgents || []).filter((id) => all.some((a) => a.id === id));
+    // an agent reading the same file as one that has them has them too
+    const via = (a) => { const o = on.find((id) => agentOf(id)?.projectInstructions === a.projectInstructions); return o ? nameOf(o) : ""; };
+    const say = (next) => next.length
+      ? t("{name}'s instructions are in its files for {agents}", { name: p.name, agents: next.map(nameOf).join(", ") })
+      : t("{name}'s instructions are taken out of its files", { name: p.name });
+    const row = el("div", "row lib-row lib-projskill lib-projinstr-agents");
+    const w = el("div", "who");
+    const files = p.instrFiles?.length ? p.instrFiles : [...new Set(all.filter((a) => on.includes(a.id)).map((a) => a.projectInstructions))];
+    w.append(el("div", "sub", files.join(", ")));
+    row.append(w, agentChips(all, on, projectChange("projects/instructions", p.dir, "", say), { via }));
+    det.append(row);
+    det.onclick = (e) => e.stopPropagation();
+    card.append(det);
+    card.append(el("p", "lib-aside lib-projfoot", t("Written between two marker lines in the file each agent reads in the project — the rest of the file stays yours. A file magpie makes is kept out of git, its .gitignore untouched.")));
+    const skip = shownAgents().filter((a) => a.instructions && !a.projectInstructions);
+    if (skip.length) card.append(el("p", "lib-aside lib-projfoot", t("{agents} reads no project instructions file magpie knows of.", { agents: skip.map((a) => a.name).join(", ") })));
+    return card;
+  }
+
   function confirmRemoveProject(p) {
     const ed = el("div", "editor lib-editor");
     const head = el("div", "ehead");
@@ -7046,7 +7130,7 @@ magpie.plugin("library", (ctx) => {
     ed.append(say);
     // #514: skills or servers given to a project once are often to stay
     // there; magpie can forget the project and leave them as they are
-    const has = p.placed?.length || Object.values(p.wrote || {}).some((x) => x.length);
+    const has = p.placed?.length || p.instrFiles?.length || Object.values(p.wrote || {}).some((x) => x.length);
     const keep = el("input");
     keep.type = "checkbox";
     const tell = () => {
@@ -7820,6 +7904,8 @@ magpie.plugin("library", (ctx) => {
       };
       nm.append(b);
     }
+    // synced in by its source and not fetched here yet (#5715)
+    if (s.pending) nm.append(tag(t("Not fetched yet"), "warn lib-pending", t("Not fetched on this computer yet: Update tries again")));
     if (s.manual) nm.append(manualTag(s.name));
     if (lib.skillRouter && s.router === "direct" && !s.manual) nm.append(tag(t("Not through the router"), "lib-direct", t("Each agent is given it as its own skill, as with the skill router off.")));
     // turned off on this computer alone: no agent here gets it, the ticks
@@ -7910,9 +7996,12 @@ magpie.plugin("library", (ctx) => {
     here.title = s.offHere ? t("Turn on on this computer") : t("Turn off on this computer only: your other computers keep it");
     here.setAttribute("aria-pressed", s.offHere ? "true" : "false");
     acts.append(here);
-    const rm = button("", "lib-icon danger", () => confirmRemoveSkill(s));
-    rm.append(svg(GLYPH.trash, 13, 1.4));
-    rm.title = t("Remove");
+    // brought in from the agents (BeiWeiji on X): Remove gives it back to
+    // them as they had it, and says so
+    const back = s.back?.length ? s.back.map(nameOf).join(", ") : "";
+    const rm = button("", "lib-icon" + (back ? " lib-putback" : " danger"), () => confirmRemoveSkill(s));
+    rm.append(svg(back ? GLYPH.putBack : GLYPH.trash, 13, 1.4));
+    rm.title = back ? t("Put back in {agents}", { agents: back }) : t("Remove");
     acts.append(rm);
     row.append(mark(s.icon, GLYPH.skill), who, acts, agentChips(withGone(all, s.agents), s.agents, chipsChange("skills/agents", s.name, "skills", (x) => skillRow(x, all)), { problems: s.problems, via: viaFor(s), all: true, always: alwaysFor(s) }));
     if (picking) return pickRow(row, s.name);
@@ -8087,6 +8176,7 @@ magpie.plugin("library", (ctx) => {
   }
 
   function confirmRemoveSkill(s) {
+    if (s.back?.length) return confirmPutBack(s);
     const ed = el("div", "editor lib-editor");
     const head = el("div", "ehead");
     head.append(glyph(GLYPH.trash), el("b", "", t("Remove {name}?", { name: s.name })));
@@ -8096,6 +8186,22 @@ magpie.plugin("library", (ctx) => {
       : t("It is taken out of every agent it was given to, and its folder is moved to magpie's backups.")));
     const bar = el("div", "bar");
     const go = button(t("Remove"), "primary danger-fill", async () => { if (await change("skills/remove", { name: s.name }, t("{name} removed", { name: s.name }))) closeLibModal(true); });
+    bar.append(el("span", "grow"), button(t("Cancel"), "", closeLibModal), go);
+    ed.append(bar);
+    modal = { save: () => go.click() };
+    openLib(ed);
+  }
+
+  // one brought in from the agents leaves the library for them again
+  function confirmPutBack(s) {
+    const agents = s.back.map(nameOf).join(", ");
+    const ed = el("div", "editor lib-editor lib-putback-sheet");
+    const head = el("div", "ehead");
+    head.append(glyph(GLYPH.putBack), el("b", "", t("Put {name} back?", { name: s.name })));
+    ed.append(head);
+    ed.append(el("p", "lib-confirm", t("It leaves the library and goes back to {agents} as it was before you brought it in.", { agents })));
+    const bar = el("div", "bar");
+    const go = button(t("Put it back"), "primary", async () => { if (await change("skills/remove", { name: s.name }, t("{name} went back to {agents}", { name: s.name, agents }))) closeLibModal(true); });
     bar.append(el("span", "grow"), button(t("Cancel"), "", closeLibModal), go);
     ed.append(bar);
     modal = { save: () => go.click() };

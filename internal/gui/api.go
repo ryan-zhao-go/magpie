@@ -1750,13 +1750,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			onDock(in)
 		}
 		// the cards the menu bar shows, any of them (TrayUsage is only the first),
-		// how often, with their logos or not, beside the bird or not, as
+		// how often, with their logos or not (Claude's or Anthropic's), beside the bird or not, as
 		// Windows' icon or not, and
 		// with their Pace numbers or not, with magpie's totals' cost or not,
 		// which of each subscription's windows, and the language the tooltip
 		// is in (yi_time), and the currency its totals' cost is in
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
-			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
+			in.TrayNoLogos != cur.TrayNoLogos || in.TrayAnthropicMark != cur.TrayAnthropicMark || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
 			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits ||
 			in.TrayCostIn() != cur.TrayCostIn()) && onTrayUsage != nil {
 			onTrayUsage()
@@ -2271,6 +2271,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.HandleFunc("POST /api/proxy/check", handleProxyCheck)
 	proxyRoutes(mux)
 	mux.HandleFunc("POST /api/pipelines/check", handlePipelineCheck)
+	mux.HandleFunc("POST /api/relay-check", handleRelayCheck)
 	mux.HandleFunc("POST /api/settings/codex-titles", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Model string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -3377,8 +3378,17 @@ func held(h http.Handler) http.Handler {
 	})
 }
 
+// stateSettings is s without the credentials Settings' own read keeps on
+// disk (settingsState), for /api/state, which is polled, and the start's
+// read of the last one (lastKnown), which puts today's settings in it
+func stateSettings(s settings.Settings) settings.Settings {
+	s.Proxies, s.LANKey, s.BarkKey, s.GitHubToken = nil, "", "", ""
+	return s
+}
+
 func state() stateJSON {
 	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Shared()} // only encoded, never changed
+	s.Settings = stateSettings(s.Settings)
 	// state() is asked for after nearly every click, so the rate — a
 	// network fetch once every TTL — is only worth its rare latency when
 	// cny is actually chosen; usd never looks at it
@@ -3780,6 +3790,15 @@ func fail(rw http.ResponseWriter, err error) {
 	if permissionDenied(err) {
 		if b := configBlocked(); b != "" {
 			out["code"], out["blocked"] = "config_blocked", b
+		}
+	}
+	// a proxy's failure magpie can explain (netproxy.Why), said in the
+	// reader's language, Go's words beside it
+	var why *netproxy.Why
+	if errors.As(err, &why) {
+		out["code"], out["why"], out["addr"], out["was"], out["now"] = "proxy_why", why.Why, why.Addr, why.Was, why.Now
+		if why.Err != nil {
+			out["detail"] = redactProxyErr(why.Err.Error())
 		}
 	}
 	var noModels *agent.NoModelsError
