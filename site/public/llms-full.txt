@@ -448,6 +448,10 @@ Yes, while Claude Code is on a model through magpie: the gateway runs with the a
 
 The Claude Code row has a sign-in setting. With magpie’s key, the default, Claude Code is signed out of claude.ai while it runs through magpie, so the plan limits in `/usage`, connectors, voice and `/teleport` are off. With claude.ai it keeps its sign-in, which magpie never passes on. Remote Control and ultrareview stay off either way.
 
+### Does Claude Code’s Code Mode work through magpie?
+
+No. Claude Code turns Code Mode on only when it talks to Anthropic’s API directly: with `ANTHROPIC_BASE_URL` pointing anywhere but `api.anthropic.com`, or with `ANTHROPIC_AUTH_TOKEN` set, it starts with the ordinary tools and says “it only works directly with the Anthropic API”. That is a check in Claude Code, and it holds for every model magpie serves, a Claude subscription’s or an Anthropic API key’s included. To use Code Mode, pick one of Claude Code’s own models in magpie so it goes straight to Anthropic, then start `claude` with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`. Code Mode also needs the feature flags Claude Code downloads, so leave Claude Code’s telemetry on in magpie’s Agents page.
+
 ### Can I use my Claude subscription and DeepSeek side by side?
 
 Yes. Sign in to Claude in magpie and its models are `claude/…` in the same picker. Requests on a Claude subscription run through the Claude Code installed on your computer.
@@ -10558,6 +10562,17 @@ magpie library mcp router off
 
 `magpie library` lists which agents are given the router and which keep their own entries, with why.
 
+## Tools on demand
+
+Every tool an agent is given goes out, with its whole parameter schema, on every request. So an agent given more than 10 tools through the router is given two in their place, and this is **on by default**:
+
+- **`find_tools`.** takes the words of what the task needs and gives the tools that match: the best 5 with their description and parameters, then up to 15 more by name. Its own description names each server and its tools, so the model knows what there is to find.
+- **`call_tool`.** runs a tool by name, with its arguments.
+
+An agent that searches its MCP tools itself is given every tool, and its own search keeps them out of each request: Claude Code, Claude Desktop, Codex, Pi, Droid and omp. So is an agent given 10 tools or fewer, and an app at the Other apps address, since magpie can’t tell which app that is.
+
+To give every agent every tool instead, turn off Tools on demand under MCP router in Library → MCP, then restart your agents.
+
 ## Other apps
 
 With the router on, the Other apps row shows an address ending in `/mcp/magpie/hub`, which serves every server in the Library. Connect… opens a sheet with a ready entry to copy for Cursor, VS Code, Windsurf or any app that takes a JSON MCP config; in the app window, Cursor and VS Code also have Add, which opens the app to confirm. An app on another computer needs a gateway key, as every request from your network does (see [Remote magpie](https://usemagpie.ai/docs/remote)).
@@ -10703,6 +10718,17 @@ It answers the same as the app’s own pages do, under `/v1/magpie/admin/`: `GET
 
 A key that is read-only, the extension’s, issued or short-lived, or the sharing key, can’t have it. A web page can’t call it, with a key or without (any request with `Origin` or `Sec-Fetch-*` is refused), and nor can a request under another name for this computer. Shared over the network, only a key set to `any` gets in.
 
+## Memory from other computers
+
+Magpie Memory answers the agents on this computer. To let an agent on another computer read and save it too, give that agent a gateway key of its own and allow it, from the key’s menu in the app under Advanced › Magpie Memory, or from the command line:
+
+```
+magpie gateway-key add remote-box
+magpie gateway-key memory <id> on
+```
+
+While magpie is shared, that agent uses `http://<this computer>:3425/mcp/magpie/memory` with `Authorization: Bearer <key>`, or finds `magpie-memory` in the MCP router. What it saves goes into every agent’s instructions here, so no other key gets it: not the sharing key, a read-only, issued or short-lived key, nor a web page, with the key or without.
+
 ## Stats API
 
 What the Usage page shows is also served as JSON, to this computer and, while magpie is shared, to a request with a gateway key. A key held to a budget, models or accounts is told only its own calls and limit, and the quotas of what it may use once its owner turns on Quotas for it (`magpie gateway-key quotas <id> on`).
@@ -10787,7 +10813,7 @@ Without `web --addr 0.0.0.0:3430 --no-open` the container runs the gateway alone
 
 Open the link from the log. The key in it is traded for a cookie and taken out of the address; a page opened without it is turned away (401). With `MAGPIE_WEB_KEY` set (16 or more letters, digits or `- . _ ~`; `openssl rand -hex 16` makes one) the key stays the same across restarts and the browser stays signed in for 400 days. Without it, every start makes a new key and the cookie lasts the browser session.
 
-The page is in **gateway mode**: Providers, Gateway, Routing, Usage, Sessions, Plugins and Settings, with no Agents, since there are no agents in the container. Library has its MCP servers alone, with the MCP router: other computers’ apps connect at the router’s address with a gateway key. Sessions lists only the sessions of agents on other computers that came through this gateway, never this machine’s agents’ files. Settings → General → Gateway mode turns it off.
+The page is in **gateway mode**: Providers, Gateway, Routing, Usage, Sessions, Plugins and Settings, with no Agents, since there are no agents in the container. Library has its MCP servers, with the MCP router: other computers’ apps connect at the router’s address with a gateway key. Beside them are its Skills and Instructions: a magpie on another computer that adds this one as an Another computer’s magpie provider, with Use its skills and prompts on, takes them and gives them to its own agents, since a skill is a folder on the agent’s computer. Sessions lists only the sessions of agents on other computers that came through this gateway, never this machine’s agents’ files. Settings → General → Gateway mode turns it off.
 
 On a NAS or a server you reach over SSH, open the page through a tunnel rather than publishing 3430: `ssh -L 3430:127.0.0.1:3430 you@nas`, then the log’s link on your own computer.
 
@@ -11040,8 +11066,6 @@ An import link is a suggestion. The user decides.
 | Windows | For the current user, the first time magpie runs. |
 | Linux | By a desktop entry (`x-scheme-handler/magpie`), written by the installer and again on first run. |
 | Terminal | `magpie import <link>` shows the same summary and asks before adding. |
-
-**CC Switch links.** magpie also opens the `ccswitch://v1/import?resource=provider&…` links relays make for CC Switch (`app`, `name`, `endpoint`, `apiKey`, `apiFormat`, `model`, or a base64 `config`), with the same confirmation. Only providers are taken, not prompts, MCP servers or skills. magpie claims the scheme only when no other app has it, so CC Switch, if installed, keeps its links (on macOS, where both can claim it, the system picks).
 
 Import links need magpie 0.1.8 or later. When magpie is already running, the link goes to that instance and its window comes forward.
 
