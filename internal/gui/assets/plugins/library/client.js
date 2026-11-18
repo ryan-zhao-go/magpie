@@ -2769,6 +2769,13 @@ magpie.plugin("library", (ctx) => {
     if (title) s.title = title;
     return s;
   }
+  // a part a Claude plugin brought: its agents follow the plugin's when
+  // those change (library/plugin.go givePlugin)
+  const withPlugin = (nm, x) => {
+    if (x.bundle) nm.append(tag(t("In {plugin}", { plugin: x.bundle }), "lib-bundle",
+      t("Comes with the Claude plugin {plugin}. Changing the plugin's agents, or turning it off and on, gives this to the plugin's agents again.", { plugin: x.bundle })));
+    return nm;
+  };
 
   // ---------- MCP servers ----------
 
@@ -3218,7 +3225,7 @@ magpie.plugin("library", (ctx) => {
         : can.length === 1 ? t(on.length ? "{agent} uses the library's servers through magpie" : "{agent} can use the library's servers through magpie", { agent: can[0].name })
         : t("{on} of {all} agents use the library's servers through magpie", { on: on.length, all: can.length })));
       const left = can.length - on.length;
-      const sub = [left ? t("{n} more can be connected", { n: left }) : t("Each server runs once, for all of them")];
+      const sub = [left ? t("{n} more can use them", { n: left }) : t("Each server runs once, for all of them")];
       if (kept.length) sub.push(kept.length === 1 ? t("1 keeps each server's own entry") : t("{n} keep each server's own entry", { n: kept.length }));
       const direct = directNames();
       if (direct) sub.push(t("{name} is given to each agent directly", { name: direct }));
@@ -3242,8 +3249,8 @@ magpie.plugin("library", (ctx) => {
       }
       const m = (a) => !q || a.name.toLowerCase().includes(q.toLowerCase());
       const groups = [
-        ...group("off", t("Not connected"), can.filter((a) => !st(a) && m(a)), many),
-        ...group("on", t("Connected"), on.filter(m), many),
+        ...group("off", t("Not using the library"), can.filter((a) => !st(a) && m(a)), many),
+        ...group("on", t("Using the library"), on.filter(m), many),
         ...group("kept", t("Keep each server's own entry"), kept.filter(m), many),
       ];
       out.push(...(groups.length ? groups : [el("p", "lib-hubnone", t("No agent called “{q}”", { q }))]));
@@ -3338,6 +3345,7 @@ magpie.plugin("library", (ctx) => {
     else if (s.signIn?.signedIn) nm.append(tag(t("Signed in"), "lib-signed", t("The agents given it use magpie's sign-in")));
     // kept to this computer: sync carries it nowhere (huhuy72219405 on X)
     // a plugin's tools say whose they are, where they are turned off too
+    withPlugin(nm, s);
     if (s.plugin) nm.append(tag(t("Plugin"), "lib-local lib-plugin", t("{plugin}'s tools. Plugins can hide them from every agent, keeping the plugin; sync never carries them to your other computers", { plugin: s.plugin })));
     else if (s.local) nm.append(tag(t("Not synced"), "lib-local", s.bridge ? bridgedWhy() : t("Sync never carries it to your other computers")));
     // out of the hub, each agent's own entry (#4382): said only while the hub is on
@@ -3659,6 +3667,9 @@ magpie.plugin("library", (ctx) => {
     }
     switch (h.why) {
       case "home": return [t("won't start in home"), more(t("It exits when started in your home folder, where magpie runs it for the agents given it, and works in a project folder. Turn off Through the MCP router in its editor, so each agent starts it in its own project"))];
+      // Chrome DevTools' or Playwright's server in magpie's container: its
+      // tools are listed, and each fails for want of a Chrome
+      case "nobrowser": return [t("no Chrome here"), t("It lists its {n} tools, but they drive a Chrome it starts itself, and there is none where magpie runs. Magpie Browser, in the Library, uses your own Chrome instead; or start it with {opt} at a Chrome it can reach", { n: h.tools, opt: h.detail })];
       case "notfound": return [t("can't start: {cmd} not found", { cmd: h.detail }), t("Can't start it: there is no {cmd} on the PATH magpie has", { cmd: h.detail })];
       case "start": return [t("can't start"), more(t("Can't start it"))];
       case "exited": return [h.code ? t("exited ({code})", { code: h.code }) : t("exited"), more(h.code ? t("It exited with code {code} before listing its tools", { code: h.code }) : t("It exited before listing its tools"))];
@@ -4688,7 +4699,7 @@ magpie.plugin("library", (ctx) => {
   function hookRow(h, all) {
     const row = el("div", "row lib-row click lib-hook");
     const who = el("div", "who");
-    who.append(el("div", "name mono", h.name));
+    who.append(withPlugin(el("div", "name mono", h.name), h));
     // what it is for, in the user's own words (#2011)
     if (h.description) who.append(el("div", "lib-hookdesc", h.description));
     who.append(el("div", "sub lib-hookev", hookLine(h)));
@@ -5007,7 +5018,7 @@ magpie.plugin("library", (ctx) => {
   function subagentRow(s, all) {
     const row = el("div", "row lib-row click lib-subagent");
     const who = el("div", "who");
-    who.append(el("div", "name mono", s.name));
+    who.append(withPlugin(el("div", "name mono", s.name), s));
     who.append(el("div", "lib-subagentdesc", s.description));
     const line = subagentLine(s);
     if (line) who.append(el("div", "sub lib-subagentuses", line));
@@ -7668,8 +7679,8 @@ magpie.plugin("library", (ctx) => {
     const time = d && !isNaN(d) ? d.toLocaleTimeString(intlLang(), { hour: "2-digit", minute: "2-digit" }) : "";
     if (l.token) return time ? t("GitHub's rate limit for your GitHub token is used up until {time}", { time })
       : t("GitHub's rate limit for your GitHub token is used up for now");
-    return time ? t("GitHub allows 60 requests an hour without a token, used up until {time}. Add a GitHub token in Settings → Network and sharing to raise it to 5,000.", { time })
-      : t("GitHub allows 60 requests an hour without a token, used up for now. Add a GitHub token in Settings → Network and sharing to raise it to 5,000.");
+    return time ? t("GitHub allows 60 requests an hour without a token, used up until {time}. Add a GitHub token in Settings › Network and sharing to raise it to 5,000.", { time })
+      : t("GitHub allows 60 requests an hour without a token, used up for now. Add a GitHub token in Settings › Network and sharing to raise it to 5,000.");
   }
 
   // what a check found of a skill, for a tooltip: the last commit to it
@@ -7860,7 +7871,7 @@ magpie.plugin("library", (ctx) => {
   function skillRow(s, all) {
     const row = el("div", "row lib-row click lib-skill" + (s.missing ? " missing" : "") + (s.source ? " src" : "") + (s.offHere ? " offhere" : ""));
     const who = el("div", "who");
-    const nm = el("div", "name", s.name);
+    const nm = withPlugin(el("div", "name", s.name), s);
     const c = s.check;
     const gone = isGone(s);
     if (gone) {
@@ -8546,6 +8557,24 @@ magpie.plugin("library", (ctx) => {
   };
   // how many cards a list shows at first, and each Show more adds
   const MARKET_PAGE = 60;
+  // Who uses each server, by its market id: the computers whose library
+  // had it in the last week (usemagpie.ai, through /api/plugins/counts),
+  // asked at most hourly. A server with USED of them goes first, most used
+  // first; the rest keep the market's own order, featured first.
+  const USED = 20;
+  let serverUsers = {}, usersAsked = 0, usersAsk = null;
+  function askServerUsers() {
+    if (!usersAsk || Date.now() - usersAsked > 36e5) {
+      usersAsked = Date.now();
+      usersAsk = api("plugins/counts").then((r) => { serverUsers = r.servers || {}; }, () => { usersAsked = Date.now() - 36e5 + 6e4; }); // a failed ask is tried again in a minute, not with every search
+    }
+    return usersAsk;
+  }
+  const usersOf = (x) => serverUsers[x.id]?.users || 0;
+  function byUse(items) {
+    const used = items.filter((x) => usersOf(x) >= USED).sort((a, b) => usersOf(b) - usersOf(a));
+    return used.length ? [...used, ...items.filter((x) => usersOf(x) < USED)] : items;
+  }
   const asked = new Set(); // skills whose description has been asked for
 
   async function fetchMarket(kind) {
@@ -8553,10 +8582,17 @@ magpie.plugin("library", (ctx) => {
     const seq = ++m.seq;
     m.loading = true;
     drawMarket(kind);
+    // the counts are asked beside the list, and waited for only briefly:
+    // a list already drawn is never reordered under the reader
+    const users = kind === "mcp" ? askServerUsers() : null;
     try {
       const r = await api("library/market/" + ({ mcp: "servers", skills: "skills", pi: "pi" })[kind] + "?q=" + encodeURIComponent(m.q.trim()));
+      if (users) await Promise.race([users, new Promise((ok) => setTimeout(ok, 1000))]);
       if (seq !== m.seq) return;
       m.items = r.items || [];
+      // a search keeps the registry's ranking
+      m.byUse = kind === "mcp" && !m.q.trim() && m.items.some((x) => usersOf(x) >= USED);
+      if (m.byUse) m.items = byUse(m.items);
       m.shown = MARKET_PAGE;
       m.error = r.error || "";
       // the source that didn't answer when the rest did (#1589)
@@ -8641,7 +8677,7 @@ magpie.plugin("library", (ctx) => {
     box.classList.toggle("loading", m.loading);
     const note = box.querySelector(".mk-note");
     note.textContent = q && m.items ? (m.items.length === 1 ? t("1 result") : t("{n} results", { n: m.items.length }))
-      : kind === "mcp" ? t("Featured, and the official MCP Registry") : kind === "pi" ? t("Most downloaded on npm") : t("Popular on skills.sh");
+      : kind === "mcp" ? (m.byUse ? t("Most used first, then featured and the MCP Registry") : t("Featured, and the official MCP Registry")) : kind === "pi" ? t("Most downloaded on npm") : t("Popular on skills.sh");
     const grid = box.querySelector(".mk-grid");
     grid.replaceChildren();
     if (!m.items) {
@@ -8781,6 +8817,13 @@ magpie.plugin("library", (ctx) => {
     const d = el("p", "mk-desc", about(x));
     d.title = about(x);
     const foot = el("div", "mk-foot");
+    const n = usersOf(x);
+    if (n) {
+      const u = el("span", "mk-installs");
+      u.append(svg(GLYPH.person, 11, 1.5), el("span", "", compact(n)));
+      u.title = t("{n} people use it, counted from the last week", { n: n.toLocaleString(intlLang()) });
+      foot.append(u);
+    }
     foot.append(el("span", "mk-id mono", x.name), el("span", "grow"), (needsKey(x) || x.optIn) && !x.have ? button(t("Add…"), "action mk-add", () => serverSheet(x)) : addButton(x, () => addServer(x, {}, null)));
     c.append(top, d, foot);
     c.onclick = () => serverSheet(x);
@@ -8824,14 +8867,14 @@ magpie.plugin("library", (ctx) => {
       ed.append(el("p", "mk-hint", t("Pick the agents that may use your browser: they act in your tabs, signed in as you are.")));
       ed.append(browserSetup());
     } else if (x.name === "magpie-web-search") {
-      ed.append(el("p", "mk-hint", t("Pick the agents that may search with it: each search goes where Settings → Models → Web search sends it, and costs what that charges.")));
+      ed.append(el("p", "mk-hint", t("Pick the agents that may search with it: each search goes where Settings › Models › Web search sends it, and costs what that charges.")));
     } else if (x.name in WEB_SEARCHES) {
       // a search server of its own (netube99 on X): the agents call it
       // with its key, beside magpie's web search, which it neither uses nor
       // switches on; one Settings has as a search API is offered there too
       const v = WEB_SEARCHES[x.name];
       const hint = el("p", "mk-hint", t("Agents call it themselves, beside magpie's web search, which doesn't use it.")
-        + (v ? " " + t("As a search API in Settings → Models → Web search, {name} searches for every model, with no server to add.", { name: x.title || x.name }) : ""));
+        + (v ? " " + t("As a search API in Settings › Models › Web search, {name} searches for every model, with no server to add.", { name: x.title || x.name }) : ""));
       const go = el("button", "link", t("Set up in Settings"));
       go.type = "button";
       go.onclick = async (e) => { if (await closeLibModal()) openSettingsAt(e, "models", "#searchList .row"); };
@@ -8840,8 +8883,8 @@ magpie.plugin("library", (ctx) => {
     } else if (x.name === "magpie-sessions") {
       ed.append(el("p", "mk-hint", t("Pick the agents that may search and read what was said in your other sessions.")));
     } else if (x.name === "magpie-vision") {
-      ed.append(el("p", "mk-hint", t("Pick the agents that may read images with it: each image goes to the Image recognition model set in Settings → Models → Images, and costs what that model charges.")));
-    } else if (x.optIn) ed.append(el("p", "mk-hint", t("Pick the agents that may generate images: each image costs what the model set in Settings → Models → Images charges.")));
+      ed.append(el("p", "mk-hint", t("Pick the agents that may read images with it: each image goes to the Image recognition model set in Settings › Models › Images, and costs what that model charges.")));
+    } else if (x.optIn) ed.append(el("p", "mk-hint", t("Pick the agents that may generate images: each image costs what the model set in Settings › Models › Images charges.")));
     // one of magpie's own that can't answer yet says why, and is added all
     // the same: it answers once that is set up, its tools saying how
     if (x.unready) ed.append(el("p", "mk-hint mk-unready", t(x.unready)));

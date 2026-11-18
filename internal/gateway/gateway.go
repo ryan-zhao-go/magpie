@@ -4412,7 +4412,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				// at once instead of waiting in the queue (FallbackHeader)
 				ctx = withFallback(ctx)
 			}
-			hw.stop = stop
+			hw.stop, hw.name = stop, c.p.Name
 			if magpieAsks(r) {
 				// another magpie asked: its log is told the tier this
 				// one sent (stampTier)
@@ -4725,6 +4725,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			skipped = append(skipped, c.label()+": "+call.Error)
 			continue
+		}
+		if hw.stuck != "" {
+			// the vendor said nothing for translatedQuietLongest while the
+			// agent was kept alive (keepQuiet): it is told so, and nobody
+			// else is asked after it has waited that long
+			call.Status, call.Error = http.StatusGatewayTimeout, hw.stuck
+			try.Status, try.Error = call.Status, call.Error
+			watched.attempt(call, try, c.p.ID, sent, hw, capture)
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+			if !hw.ended {
+				failTo(w, kept, from, call.Status, hw.stuck)
+			}
+			break
 		}
 		if hw.slow {
 			// no first content in the group's FirstToken, and nothing of
@@ -10083,7 +10096,8 @@ var keepaliveEvery, keepaliveLongest = 15 * time.Second, 5 * time.Minute
 
 // translatedQuietLongest is how long a translated reply's upstream may
 // say nothing at all, its stream open, while magpie keeps the client
-// alive every keepaliveEvery (keepThroughSilence). A reply that comes in
+// alive every keepaliveEvery (keepThroughSilence), and a reply passed
+// through or held is kept so too (keepQuiet). A reply that comes in
 // one burst at its end (claude-opus-5-5 at effort max, a relay that
 // buffers) is silent for its whole generation, which runs past 10
 // minutes, longer than the 10 minutes magpie gives a vendor for its

@@ -1631,7 +1631,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 /* always there, quiet until its row is pointed at (skingstyle48487: a
    button shown only on hover went unfound) */
 .led-spd-check { height: 20px; padding: 0 2px; font-size: 11px; color: var(--muted); }
-.led-spd tr:hover .led-spd-check, .led-spd-check:focus-visible { color: var(--ctl-fg); }
+.led-spd tr:hover .led-spd-check { color: var(--ctl-fg); }
+.led-spd-check:focus-visible { color: var(--ctl-fg); }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -3975,6 +3976,8 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
    the longest, on one line, rather than wrap a last 址 under it (#875) */
 .editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: first baseline; padding-top: 8px; }
 .editor .more .inner label { white-space: nowrap; }
+.editor .more .inner > .adv-head { grid-column: 1 / -1; font-size: 11px; font-weight: 600; color: var(--muted); margin-top: 8px; }
+.editor .more .inner > .adv-head:first-child { margin-top: 0; }
 .editor .warnbox { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--fg); background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; padding: 8px 10px; }
 .editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 var(--ed-at, 86px); }
 .editor.import .mchips .mchip { cursor: default; }
@@ -4450,7 +4453,7 @@ input.words.window-in { width: 96px; font-variant-numeric: tabular-nums; }
    sends, who the allow list lets in), a line with a button or link in
    it. A touch screen, with no hover, keeps them all. */
 @media (hover: hover) {
-  :is(#view-settings:not(.set-searching), .editor.roomy .prov-prefs) .row.pref > .who > .sub:not(.err, .bad, .say, .proxy-check, .lib-way, .image-gen-hidden, .sync-sign-in, .no-names, .pv-hits, .feat-why, .vision-not-marked, .video-gen-how, .font-note, .acts, [role="status"], #proxySub):not(#otelSessionsRow *, #allowList *, .disabled-model *) {
+  :is(#view-settings:not(.set-searching), .editor.roomy .prov-prefs) .row.pref > .who > .sub:not(.err, .bad, .say, .proxy-check, .lib-way, .image-gen-hidden, .sync-sign-in, .no-names, .pv-hits, .feat-why, .vision-not-marked, .video-gen-how, .font-note, .acts, [role="status"], #proxySub, :has(> .warn)):not(#otelSessionsRow *, #allowList *, .disabled-model *) {
     --hint: 1; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
   /* the line held out of sight stays in its row's box: placed against the
@@ -4584,7 +4587,7 @@ input.words.remote-key { width: 160px; }
 :root[data-theme="dark"] .warm-at input.at { color-scheme: dark; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .warm-at input.at { color-scheme: dark; } }
 @media (max-width: 520px) { .proxy-segs { flex-wrap: wrap; justify-content: flex-end; } }
-/* Settings → Plugins: what a plugin signs in to, or why it didn't load, said whole */
+/* Plugins page: what a plugin signs in to, or why it didn't load, said whole */
 .row.pref.plugin-row .sub, .row.pref.plugin-add .sub { white-space: normal; }
 .row.pref.plugin-row.off .name { color: var(--muted); }
 .row.pref.plugin-add .val { flex-wrap: wrap; justify-content: flex-end; }

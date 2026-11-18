@@ -778,7 +778,7 @@ function routingPage(part) {
     drain: ["Until used up", "Until used up: one answers everything until its quota is used up; then the next, which keeps them even after the one before renews."],
     // the unit that goes round is the user's message (Wing8Aqua on X)
     rotate: ["In turn", "In turn: each message you send goes to the next account, round the list; the agent's tool calls for it stay on the same one. With Stays on Session, a whole conversation stays on one instead."],
-    usage: ["Least used", "Least used first: the account with the most of its allowance left goes first; a key by the tokens magpie sent it lately."],
+    usage: ["Least used first", "Least used first: the account with the most of its allowance left goes first; a key by the tokens magpie sent it lately."],
     pace: ["Use before expiry", "Use before expiry: the account with the most left per hour until it is lost goes first — at its reset, or, when credits in it expire sooner, by those that expire first; an account with five hours and no week by what its five hours have left per hour. One at 90% or more waits until the others can't answer; a key by the tokens magpie sent it lately."],
     manual: ["Manual", "Manual: every request goes to the model picked on the group's card, over its own accounts or keys."],
     // a provider's keys or a subscription's accounts by weight (#841,
@@ -6331,7 +6331,7 @@ function routingPage(part) {
   };
   window.routingGroupsHome();
   if (gHome()) byWidth(gHome(), { max520: (w) => w <= 520 });
-  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["drain", "Until used up"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Use before expiry"], ["free", "Free first"], ["fast", "Speed first"]];
+  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["drain", "Until used up"], ["rotate", "In turn"], ["usage", "Least used first"], ["pace", "Use before expiry"], ["free", "Free first"], ["fast", "Speed first"]];
   // a group may also be routed by hand: every request to the member the
   // user picks on its card (provider.Manual, #317) — a provider's keys can't
   // and by its members' weights, as a provider's keys are (#1910)
@@ -8175,17 +8175,19 @@ function routingPage(part) {
       // the image models after them, said as such (jzw690 on X): a group
       // of them is picked in Settings › Models › Images, or named at the images API
       const drawRef = (x) => ({ ...ref(x), note: noted(`${x.providerName} · ${t("Image model")}`, x.id) });
-      const options = [...subs, ...(decides ? [] : groups.models.map(ref)), ...(decides ? [] : (groups.drawers || []).map(drawRef)), ...(chats ? [] : (groups.deciders || []).map(ref))];
-      // the member a model is in the group as: itself, or with its
-      // reasoning fixed (deepseek/x:max), which is ticked as it and taken
-      // out by it rather than added twice (#907)
-      const holding = (id) => d.members.includes(id) ? id : d.members.find((m) => splitMember(m)[0] === id);
-      openPicker({ id: "", name: "", fields: [] }, { key: "member", label: "model", value: "", options, multi: true, picked: (id) => !!holding(id), onPick: (id) => {
+      // a model in the group with its reasoning fixed (deepseek/x:max) or
+      // on one account is a row of its own, ticked, its level or account
+      // in its note, and a click takes that member out (#907); the model's
+      // own row under it adds it again, to be fixed at another level
+      // (visamzh on X: gpt-6.2-sol at high and at xhigh, #189)
+      const withHeld = (mk) => (x) => [...d.members.filter((m) => m !== x.id && !subOf(m) && splitMember(m)[0] === x.id)
+        .map((m) => { const o = mk(x); return { ...o, value: m, note: [fixedOf(m) && fixedWords(fixedOf(m)), memberAccount(m)?.name, o.note].filter(Boolean).join(" · ") }; }), mk(x)];
+      const options = [...subs, ...(decides ? [] : groups.models.flatMap(withHeld(ref))), ...(decides ? [] : (groups.drawers || []).flatMap(withHeld(drawRef))), ...(chats ? [] : (groups.deciders || []).flatMap(withHeld(ref)))];
+      openPicker({ id: "", name: "", fields: [] }, { key: "member", label: "model", value: "", options, multi: true, picked: (id) => d.members.includes(id), onPick: (id) => {
         if (!id) return;
-        const m = holding(id);
-        if (!m) d.members.splice(d.members.findLastIndex((x) => !d.matched.includes(x)) + 1, 0, id); // after the last named
-        else if (d.matched.includes(m)) return status(t("In the group by a pattern: switch it off to send it nothing"), "warn");
-        else { d.members.splice(d.members.indexOf(m), 1); rematch(); }
+        if (!d.members.includes(id)) d.members.splice(d.members.findLastIndex((x) => !d.matched.includes(x)) + 1, 0, id); // after the last named
+        else if (d.matched.includes(id)) return status(t("In the group by a pattern: switch it off to send it nothing"), "warn");
+        else { d.members.splice(d.members.indexOf(id), 1); rematch(); }
         draw(); drawRules();
       } }, addBtn, ev);
     };
@@ -8498,7 +8500,7 @@ function routingPage(part) {
     const ctxHint = el("div", "hint"), ctxW = el("div", "ctx-wrap");
     const ctxIn = keys(input(d.context > 0 ? ctxShort(d.context).toLowerCase() : "", t("e.g. 200k")));
     ctxIn.classList.add("ctx-in");
-    ctxIn.setAttribute("aria-label", t("Context"));
+    ctxIn.setAttribute("aria-label", t("Context window"));
     ctxHint.id = "groupContextHint";
     ctxIn.setAttribute("aria-describedby", ctxHint.id);
     const ctxOf = (id) => groups.models.find((x) => x.id === id)?.context || infoOf(id)?.context || 0;
@@ -8536,21 +8538,30 @@ function routingPage(part) {
       if (n > 0) d.context = n;
       drawCtx();
     };
-    advIn.append(el("label", "", t("Context")), ctxW);
+    advIn.append(el("label", "", t("Context window")), ctxW);
     drawCtx();
     // where agents compact in this group (NovaStudiosss on X): the size
     // here, else the smallest member's, as a provider's model sets it
     const cmpIn = keys(input(d.compact > 0 ? ctxShort(d.compact).toLowerCase() : "", t("Default")));
     cmpIn.classList.add("cmp-in");
     cmpIn.setAttribute("aria-label", t("Compact at"));
+    const cmpHint = el("div", "hint"), cmpW = el("div");
+    cmpHint.id = "groupCompactHint";
+    cmpHint.hidden = true;
+    cmpIn.setAttribute("aria-describedby", cmpHint.id);
+    let cmpErr = "";
     cmpIn.oninput = () => {
       const v = cmpIn.value.trim().toLowerCase().replace(/_/g, ""), m = v.match(/^(\d+(?:\.\d+)?)\s*([km]?)$/);
       const n = m ? Math.round(+m[1] * (m[2] === "k" ? 1e3 : m[2] === "m" ? 1e6 : 1)) : 0;
-      cmpIn.setAttribute("aria-invalid", String(!!v && !(n > 0)));
+      cmpErr = !v || n > 0 ? "" : t("{v} is not a length of tokens like 200k or 1m", { v: cmpIn.value.trim() });
+      cmpIn.setAttribute("aria-invalid", String(!!cmpErr));
+      cmpHint.textContent = cmpErr;
+      cmpHint.hidden = !cmpErr;
       if (!v) d.compact = 0;
       else if (n > 0) d.compact = n;
     };
-    advIn.append(el("label", "", t("Compact at")), cmpIn);
+    cmpW.append(cmpIn, cmpHint);
+    advIn.append(el("label", "", t("Compact at")), cmpW);
     const aHint = el("div", "hint", t(AFF_HINT[d.affinity] || AFF_HINT[""]));
     const aw = el("div");
     aw.append(segs(AFF_OPTS.map(([id, n]) => [id, t(n)]), d.affinity, (v) => { d.affinity = v; aHint.textContent = t(AFF_HINT[v] || AFF_HINT[""]); drawFig(); }), aHint);
@@ -9385,6 +9396,9 @@ function routingPage(part) {
     const saveBtn = el("button", "text primary", t(g ? "Save" : "Add"));
     const save = () => {
       if (addPattern() === null) return adv.open = true, pin.focus({ preventScroll: true }); // typed, not added: it is meant
+      // a box under Advanced that doesn't read keeps its last good value: never saved as if it did
+      const bad = [[firstErr, firstIn], [ctxErr, ctxIn], [cmpErr, cmpIn]].find(([e]) => e);
+      if (bad) { adv.open = true; bad[1].focus({ preventScroll: true }); return status(bad[0], "warn"); }
       if (!d.members.length && !d.match.length) { addBtn.focus({ preventScroll: true }); return status(t("A group needs a model in it"), "warn"); }
       d.rules.forEach((r) => { r.intent = (r.intent || "").trim(); });
       // hours: both times, or none and no days; days alone are all day
