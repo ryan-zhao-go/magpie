@@ -607,7 +607,7 @@ func Pricer() func(Record) *catalog.Price {
 		// its calls apart from the provider's other keys
 		key := r.ProviderKeyID
 		tier := r.billedTier()
-		k := [7]string{id, r.Model, served, r.SessionProvider, r.Effort, key, tier}
+		k := [7]string{id, r.Model, served, r.SessionProvider, r.Effort, key, r.tierKey(tier, served)}
 		if pr, ok := prices[k]; ok {
 			return atWindow(pr, windows[id], r.Time)
 		}
@@ -622,7 +622,7 @@ func Pricer() func(Record) *catalog.Price {
 		} else {
 			// Fast and Ultrafast bill at more than the standard price
 			// (Archivemylife on X: a Fast call read at the standard one)
-			pr = tierPriced(pr, tier, served, r.Model)
+			pr = tierPriced(pr, tier, r.Time, served, r.Model)
 		}
 		prices[k] = pr
 		return atWindow(pr, ws, r.Time)
@@ -633,8 +633,10 @@ func Pricer() func(Record) *catalog.Price {
 // for the tier when pr is that model's standard price, the model that ran
 // or the one asked for (catalog.TierPrice), else pr. The rows hold the
 // tier's price, so the question is noted: a catalog that prices the tier
-// otherwise names the request index anew.
-func tierPriced(pr *catalog.Price, tier string, models ...string) *catalog.Price {
+// otherwise names the request index anew. at is the call's time: a tier
+// whose rate changes on a date (catalog.TierTimes) is priced at the rate
+// of its day.
+func tierPriced(pr *catalog.Price, tier string, at time.Time, models ...string) *catalog.Price {
 	if pr == nil || tier == "" {
 		return pr
 	}
@@ -643,17 +645,33 @@ func tierPriced(pr *catalog.Price, tier string, models ...string) *catalog.Price
 		if model == "" {
 			continue
 		}
-		tp, ok := catalog.TierPrice(*pr, model, tier)
+		tp, ok := catalog.TierPrice(*pr, model, tier, at)
 		answer := ""
 		if ok {
 			answer = priceAnswer(&tp, nil)
 		}
-		noteAsk(strings.Join([]string{"t", model, tier, std}, askSep), answer)
+		q := []string{"t", model, tier, std}
+		if _, era := catalog.TierTimes(model, tier, at); era >= 0 {
+			q = append(q, strconv.Itoa(era))
+		}
+		noteAsk(strings.Join(q, askSep), answer)
 		if ok {
 			return &tp
 		}
 	}
 	return pr
+}
+
+// tierKey is tier as a price cache keys it: with the rate of the call's
+// day where the tier's rate changes on a date (catalog.TierTimes), so
+// calls either side of the change price apart.
+func (r Record) tierKey(tier string, models ...string) string {
+	for _, m := range append(models, r.Model) {
+		if _, era := catalog.TierTimes(m, tier, r.Time); m != "" && era >= 0 {
+			return tier + "@" + strconv.Itoa(era)
+		}
+	}
+	return tier
 }
 
 // billedTier is the service tier a record's call is priced at: the one
@@ -777,7 +795,7 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 	"effort", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "reasoning_tokens",
 	"cost_usd", "duration_ms", "ttft_ms", "status", "error", "session", "kind", "provider_key_id", "provider_key_name", "provider_account", "route_id",
 	"request_id", "endpoint", "error_message", "error_type", "source", "rejected", "session_provider", "session_account", "session_official_login", "caller_key_id", "caller_key_name", "response_id", "upstream",
-	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on", "tier_asked", "tier_sent", "tier_served", "upstream_stop", "credits"}
+	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on", "tier_asked", "tier_sent", "tier_served", "upstream_stop", "credits", "sent_model"}
 
 // WriteCSV writes rows as CSV, a header first (cache_write_tokens is every
 // cache write, as it always was, and the last two columns split it into
@@ -793,7 +811,8 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 // asked for, the one sent on the row's try and the one the reply said it
 // ran at, each empty when there was none (Record.TierAsked). credits is
 // what the reply said the call cost in its plan's credits, empty when it
-// said none (Record.Credits).
+// said none (Record.Credits). sent_model is the model id the request went
+// out to the vendor under, empty when it went as model (Record.Wire).
 func WriteCSV(w io.Writer, rows []Row) error {
 	cw := csv.NewWriter(w)
 	cw.Write(CSVHeader)
@@ -824,7 +843,7 @@ func WriteCSV(w io.Writer, rows []Row) error {
 			cost, strconv.FormatInt(r.Millis, 10), ttft, n(r.Status), strconv.FormatBool(r.Failed()), r.Session, r.Kind, r.ProviderKeyID, r.ProviderKeyName, r.Account(), routeID,
 			r.RequestID, r.Endpoint, r.Error, r.ErrType, r.Source, strconv.FormatBool(r.IsRejected()), r.SessionProvider, r.SessionAccount, strconv.FormatBool(r.SessionOfficialLogin), r.CallerKeyID, r.CallerKeyName, r.ResponseID, r.Upstream,
 			n(r.CacheWrite - min(r.CacheWrite1h, r.CacheWrite)), n(min(r.CacheWrite1h, r.CacheWrite)), tries, strconv.FormatBool(r.HandedOn),
-			r.TierAsked, r.TierSent, r.TierServed, r.Stop, credits})
+			r.TierAsked, r.TierSent, r.TierServed, r.Stop, credits, r.Wire})
 	}
 	cw.Flush()
 	return cw.Error()
