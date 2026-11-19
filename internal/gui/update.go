@@ -152,7 +152,13 @@ type updateJSON struct {
 	// isn't the newest
 	Channel string `json:"channel,omitempty"`
 	Newest  string `json:"newest,omitempty"`
-	Done    int64  `json:"done,omitempty"` // downloading: bytes so far
+	// Ahead: latest on Stable or Daily, this version is newer than the
+	// channel's (Latest). Nothing is installed until the channel passes
+	// it, and "up to date on Daily" read as an update that never came
+	// (realfxw on X: 0.1.4445 on Daily, whose pick was 0.1.4395, restarted
+	// again and again)
+	Ahead bool  `json:"ahead,omitempty"`
+	Done  int64 `json:"done,omitempty"` // downloading: bytes so far
 	// downloading: the step under way, "" before the first
 	// (update.StepDownload, StepRetry, StepVerify, StepUnpack,
 	// StepSignature), and how fast the bytes came over the last seconds,
@@ -808,6 +814,7 @@ func (u *updater) jsonIn(lang string) updateJSON {
 		j.Channel = u.channel
 		if u.state == "latest" {
 			j.Newest = u.newest
+			j.Ahead = update.Newer(Version, u.latest.Version)
 		}
 	}
 	if u.latestStale() {
@@ -1145,7 +1152,16 @@ func restartInto(web, window bool, view string, bySelf bool) bool {
 		return false
 	}
 	if err != nil {
+		// the new version is in place but nothing started it: quitting now
+		// would leave no magpie running at all (ShipInSand on X: it "often
+		// disappears by itself"). This one runs on and says so.
 		log.Println("update:", err)
+		os.Remove(filepath.Join(settings.Dir(), updatedInAppFile))
+		unmarkQuietRestart()
+		updates.mu.Lock()
+		updates.err = "the new version is installed but couldn't be started (" + err.Error() + "): quit magpie and open it again"
+		updates.mu.Unlock()
+		return false
 	}
 	return true
 }
