@@ -703,7 +703,7 @@ func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Pro
 // too, within its own order (#2255), before g's Sink orders the whole.
 // A member's fallbacks are not the group's.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
-	var pl planned
+	pl := planned{routing: g.Routing, grouped: true}
 	var asides []candidate
 	var wAsides []Weighed
 	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides, nil)
@@ -1632,6 +1632,10 @@ var restingUntil = struct {
 	// found, from whichever page lifted it (zoecats on Discord: Try now
 	// in the provider's editor left Routing at 429 until a restart)
 	lifted map[string]time.Time
+	// renewAsked is, by the key it rests by, the end of a rest the vendor
+	// timed that a reading's renewal had asked again once
+	// (askOnRenewalLocked): not asked so again till another time is named
+	renewAsked map[string]time.Time
 }{m: map[string]time.Time{}, note: map[string]Rest{}, lifted: map[string]time.Time{}}
 
 // liftedLocked notes that the rest by key was lifted now, with
@@ -1643,6 +1647,11 @@ func liftedLocked(key string, now time.Time) {
 		}
 	}
 	restingUntil.lifted[key] = now
+	// the limit it was shown for is over too (limit_notice.go): written
+	// by saveDropped once the lock is let go
+	if dropNotice(key) {
+		noticesDropped.Store(true)
+	}
 }
 
 // liftedRests is when each rest lifted before its time was lifted, by
@@ -2026,9 +2035,14 @@ func elsewhere(left []candidate, c candidate) []candidate {
 // Google's suspension of an account for its terms (googleSuspended): it
 // says the service was disabled in this account before the request came,
 // a ruling on the account, not on what was sent, so the provider's other
-// accounts are asked (bestony on Discord).
+// accounts are asked (bestony on Discord). Nor does Anthropic's disabling
+// of a Claude account or organization (claudeAccountOff): the same.
 func riskRefused(c candidate, status int, header http.Header, body []byte) bool {
-	return failureOf(c, status, body) == failRestricted && !remoteModelRest(c, failRestricted, header) && !googleSuspended(c.p, carriedStatus(status, body), body)
+	if failureOf(c, status, body) != failRestricted || remoteModelRest(c, failRestricted, header) {
+		return false
+	}
+	status = carriedStatus(status, body)
+	return !googleSuspended(c.p, status, body) && !claudeAccountOff(c.p, status, body)
 }
 
 // elsewhereWeighed is elsewhere on a list of candidates beside their
@@ -2081,6 +2095,11 @@ func retryable(status int, body []byte) bool {
 		// quotaWords' is in it, so a group never asked the account with
 		// 6,467 points and the empty one was never rested (#4095,
 		// mycf_711)
+		return true
+	case status >= 400 && status < 500 && claudeOffWords.Match(body):
+		// the account turned off (its organization disabled, on hold):
+		// nothing about the request, which another member may serve. A
+		// 400, it ended the group at the disabled account (Ramon317317)
 		return true
 	case status >= 400 && status < 500 && refusedWords.Match(body):
 		// the vendor turning the agent's prompt away, at whatever 4xx it
@@ -2796,6 +2815,11 @@ type holdWriter struct {
 	// one in the same stream (refusalHandover); handedOver says it was
 	over       *refusalHandover
 	handedOver bool
+
+	// retold is how the vendor's error the try wrote is told to the
+	// agent (retell): the held bytes keep magpie's reading of it, which
+	// the rest, the rate hold and the retired model are read from
+	retold []retelling
 }
 
 // onLoop sets what is told of a loop before it ends the reply (reask),
@@ -2950,7 +2974,10 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	}
 	if h.passing {
 		h.sent(b)
-		return h.w.Write(b)
+		if n, err := h.w.Write(retell(h.retold, b)); err != nil {
+			return n, err
+		}
+		return len(b), nil
 	}
 	n, err := h.held.Write(b)
 	if h.stream && h.failure == 0 {
@@ -3767,7 +3794,7 @@ func (h *holdWriter) release() {
 			streamError(h.w, h.alive.proto, h.alive.model, h.failure, who+" "+h.failMsg)
 		case h.status >= 400:
 			// an error status, once the agent has a stream: told as its error
-			streamError(h.w, h.alive.proto, h.alive.model, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
+			streamError(h.w, h.alive.proto, h.alive.model, h.status, retellText(h.retold, provider.APIError(h.held.Bytes(), http.StatusText(h.status))))
 		default:
 			// a reply given whole by a vendor that ignored stream:true,
 			// after the agent was kept alive: sent as the stream it asked
@@ -3777,7 +3804,7 @@ func (h *holdWriter) release() {
 		return
 	}
 	h.pass()
-	h.w.Write(h.held.Bytes())
+	h.w.Write(retell(h.retold, h.held.Bytes()))
 	h.flush()
 }
 

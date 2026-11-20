@@ -439,11 +439,20 @@ type Request struct {
 	// and the conversation sent before stay as they were, so its prompt
 	// cache does (#2660). Every other upstream gets them in tools.
 	LoadedInPlace bool
+	// DeferredNamed is set on a Claude Code request carrying its
+	// DeferredToolPlaceholder: its deferred tools are named in a
+	// reminder and declared only once ToolSearch loads them
+	// (deferred_route.go).
+	DeferredNamed bool
 	// CR is set when the model asked is one of the glm-5.3-flash* routes
 	// whose replicas stitch CR into a call's arguments (#4256): the
 	// arguments reach the client with the stitched CR dropped
 	// (tool_args_cr.go).
 	CR bool
+	// Free is, for a Gemini model, where each tool's objects of any
+	// fields are, by the tool's name: sent to it as JSON text, they
+	// reach the client read back (gemini_free_objects.go, #7363).
+	Free map[string][][]string
 }
 
 // nsTool is a tool as a Responses client knows it: by its namespace and its
