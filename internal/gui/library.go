@@ -124,6 +124,9 @@ type marketJSON struct {
 	// Custom is a server to add by hand, for a search that is an address
 	// nothing listed is at
 	Custom *library.Custom `json:"custom,omitempty"`
+	// Direct is the Pi package a search names outright (an npm name, npm:,
+	// a git address), to install as named when nothing listed is it
+	Direct *library.PiMarketPackage `json:"direct,omitempty"`
 	// Failed is the source the search couldn't reach, and Cause why; the
 	// items are then what the others found (#1589)
 	Failed string `json:"failed,omitempty"`
@@ -160,6 +163,17 @@ func revealable(v *library.View) []string {
 	}
 	for _, s := range v.FoundSkills {
 		out = append(out, s.Link, s.Shared)
+	}
+	for _, s := range v.Subagents {
+		// the file it is kept in, to edit it in
+		if s.Path != "" {
+			out = append(out, s.Path)
+		}
+	}
+	for _, r := range v.Rules {
+		for _, f := range r.Files {
+			out = append(out, f)
+		}
 	}
 	for _, p := range v.Projects {
 		out = append(out, p.Dir)
@@ -211,8 +225,11 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		writeJSON(rw, marketOf(list, err))
 	})
 	mux.HandleFunc("GET /api/library/market/pi", func(rw http.ResponseWriter, r *http.Request) {
-		list, err := library.MarketPiPackages(r.URL.Query().Get("q"))
-		writeJSON(rw, marketOf(list, err))
+		q := r.URL.Query().Get("q")
+		list, err := library.MarketPiPackages(q)
+		m := marketOf(list, err)
+		m.Direct = library.PiDirectAt(q, list)
+		writeJSON(rw, m)
 	})
 	mux.HandleFunc("POST /api/library/market/about", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ IDs []string }
@@ -326,6 +343,12 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 	// copied from one Pi to another
 	mux.HandleFunc("GET /api/library/pi", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, library.ReadPiExtensions())
+	})
+	// What the agents' own plugins (Codex's marketplaces) and packages (Pi's)
+	// declare, read and never written (#7244). Asked for when the Library
+	// is opened, not part of the polled /api/library.
+	mux.HandleFunc("GET /api/library/native", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, library.ReadNative())
 	})
 	mux.HandleFunc("POST /api/library/pi", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -713,6 +736,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			// a subagent saved (#2283)
 			Subagent library.Subagent
 			Command  library.Command
+			Rule     library.Rule
 			Agent    string            // the agent whose own skill is in the library's way
 			App      string            // the app the MCP hub is added to (servers/hub-open)
 			Note     string            // what the MCP router says of itself (servers/hub-note), or a skill's note (skills/note)
@@ -828,6 +852,12 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.CommandAgentsSet(in.Name, in.Agents)
 		case "commands/remove":
 			res, err = library.RemoveCommands([]string{in.Name})
+		case "rules/save":
+			res, err = library.SaveRule(in.Old, in.Rule)
+		case "rules/agents":
+			res, err = library.RuleAgentsSet(in.Name, in.Agents)
+		case "rules/remove":
+			res, err = library.RemoveRules([]string{in.Name})
 		case "commands/import":
 			res, err = library.ImportCommands(in.Paths)
 		case "subagents/import":
@@ -920,6 +950,27 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.ProjectSubagents(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
 		case "projects/server":
 			res, err = library.ProjectServer(in.Dir, in.Name, in.Agents)
+		case "projects/plugin":
+			res, err = library.ProjectPlugin(in.Dir, in.Name, in.Agents)
+		case "projects/hooks":
+			// some library hooks in this project, for these agents
+			res, err = library.ProjectHooks(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
+		case "projects/claude-plugin":
+			// a plugin Claude Code has installed, on for this project alone
+			// (agents ["claude"]) or taken out of its settings ([])
+			if len(in.Agents) > 1 || len(in.Agents) == 1 && in.Agents[0] != "claude" {
+				http.Error(rw, "only Claude Code reads a project's enabledPlugins", http.StatusBadRequest)
+				return
+			}
+			res, err = library.ProjectClaudePlugin(in.Dir, in.Name, len(in.Agents) == 1)
+		case "projects/pi":
+			// a Pi package of the project's .pi/settings.json: "on", "off"
+			// (kept, loads nothing), "removed", or "adopt" for one it declares
+			if in.How == "adopt" {
+				res, err = library.ProjectPiAdopt(in.Dir, in.Name)
+			} else {
+				res, err = library.ProjectPi(in.Dir, in.Name, in.How)
+			}
 		case "projects/server-off":
 			// a Library server turned off in this project only
 			res, err = library.ProjectServerOff(in.Dir, in.Name, in.Agents)

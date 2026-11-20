@@ -64,6 +64,9 @@ type Skill struct {
 	// Gone is when an update or a check found its source without it: it
 	// was removed there (skill_gone.go). Kept on this computer only.
 	Gone string `json:"gone,omitempty"`
+	// Dangling is a skill linked in from a folder that is gone
+	// (skill_dangling.go): given to no agent. Set at each sync and read.
+	Dangling bool `json:"-"`
 	// OffHere turns the skill off on this computer alone (hanslin1666 on
 	// Discord): no agent here gets it, whatever Agents says. Agents is
 	// what a sync carries and stays as the other computers have it; this
@@ -108,7 +111,7 @@ type HomeEntry struct {
 // gives reports whether the agent id gets the skill on this computer: it
 // is ticked for it, and the skill isn't turned off here.
 func (s *Skill) gives(id string) bool {
-	return s != nil && !s.OffHere && slices.Contains(s.Agents, id)
+	return s != nil && !s.OffHere && !s.Dangling && slices.Contains(s.Agents, id)
 }
 
 // SkillHere turns a skill on or off on this computer alone. Which agents
@@ -207,6 +210,11 @@ type meta struct {
 	// Discord). False when the front matter doesn't parse, or the value
 	// isn't a bool: not known.
 	Manual bool `yaml:"disable-model-invocation" json:"-"`
+	// Typed is its user-invocable: false for a skill only the model
+	// calls, which no agent offers to type; nil when it isn't said.
+	Typed *bool `yaml:"user-invocable" json:"-"`
+	// Hint is its argument-hint, which Claude Code shows after /name.
+	Hint string `yaml:"argument-hint" json:"-"`
 }
 
 func readMeta(dir string) (meta, bool) {
@@ -787,8 +795,11 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 	// the skills the router lists here (skill_router.go): no link of
 	// their own
 	routed := l.routedFor(t, sharers, cp, inShared)
+	// and the ones the user types still, each by a stub of its own
+	slash := slashFor(t, all, sharers, routed)
+	dropStubs(t, slash, res)
 	if !t.Gone {
-		defer l.placeRouter(t, routed, a, res)
+		defer l.placeRouter(t, routed, slash, a, res)
 	}
 	var mine []string
 	for _, name := range a.Skills {
@@ -2483,9 +2494,10 @@ func foundSkills(l *Library) []FoundSkill {
 			f := byName[name]
 			// magpie's link to the library's folder is an agent having the
 			// one found there
-			// and the skill router's entry is magpie's own (skill_router.go)
+			// and the skill router's entry and slash stubs are magpie's own
+			// (skill_router.go)
 			if strings.HasPrefix(name, ".") || ours(p, name) && (f == nil || f.Library == "") || l.skill(name) != nil || !nameRe.MatchString(name) ||
-				name == RouterSkill && routerOurs(p) {
+				routerOurs(p) {
 				continue
 			}
 			m, ok := readMeta(p)
