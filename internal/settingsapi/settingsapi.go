@@ -46,7 +46,7 @@ var Keys = []string{
 	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin", "checkinAt",
 	// models: replies, vision, images, search
 	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudeNoExtraUsage", "claudePrintMode", "refusalRetries", "retryAfterCap",
-	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "classifyTimeout",
+	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "imageResolution", "classifyTimeout",
 	// what every routing group does that says nothing of its own
 	"groupSink", "groupFirstToken", "groupPatience",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
@@ -59,21 +59,22 @@ var Keys = []string{
 // checks a saved value against (a value outside them is refused there,
 // from the window as from the CLI). A setting's "" is its default.
 var Choices = map[string][]string{
-	"theme":          settings.Themes,
-	"lang":           settings.Langs,
-	"tray":           settings.Trays,
-	"currency":       settings.Currencies,
-	"totalCurrency":  settings.TotalCurrencies,
-	"trayCurrency":   settings.TotalCurrencies,
-	"codexWarmup":    {"off", "week", "all"},
-	"claudeWarmup":   {"off", "week", "all"},
-	"trayUsageEvery": ints(settings.TrayEvery),
-	"dayStart":       {"0", "1", "2", "3", "4", "5", "6"},
-	"updateChannel":  {settings.UpdateStable, settings.UpdateDaily},
-	"updateSource":   {settings.UpdateSourceSite, settings.UpdateSourceGitHub},
-	"updateEvery":    ints(settings.UpdateEveries),
-	"searchFirst":    {settings.SearchFirstModel, settings.SearchFirstAPI},
-	"replyModel":     settings.ReplyModels,
+	"theme":           settings.Themes,
+	"lang":            settings.Langs,
+	"tray":            settings.Trays,
+	"currency":        settings.Currencies,
+	"totalCurrency":   settings.TotalCurrencies,
+	"trayCurrency":    settings.TotalCurrencies,
+	"codexWarmup":     {"off", "week", "all"},
+	"claudeWarmup":    {"off", "week", "all"},
+	"trayUsageEvery":  ints(settings.TrayEvery),
+	"dayStart":        {"0", "1", "2", "3", "4", "5", "6"},
+	"updateChannel":   {settings.UpdateStable, settings.UpdateDaily},
+	"updateSource":    {settings.UpdateSourceSite, settings.UpdateSourceGitHub},
+	"updateEvery":     ints(settings.UpdateEveries),
+	"searchFirst":     {settings.SearchFirstModel, settings.SearchFirstAPI},
+	"replyModel":      settings.ReplyModels,
+	"imageResolution": {"1K", "2K", "4K"},
 }
 
 func ints(v []int) []string {
@@ -217,6 +218,10 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["imageTimeout"]; !sent {
 		in.ImageTimeout = cur.ImageTimeout
 	}
+	// nor the resolution an image is drawn at
+	if _, sent := fields["imageResolution"]; !sent {
+		in.ImageResolution = cur.ImageResolution
+	}
 	// nor how long a routing group's classifier is given (#2934)
 	if _, sent := fields["classifyTimeout"]; !sent {
 		in.ClassifyTimeout = cur.ClassifyTimeout
@@ -330,6 +335,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.RedactModelScore = cur.RedactModelScore         // set on its own (privacy-model)
 	in.RedactModelOff = cur.RedactModelOff             // set on its own (privacy-model)
 	in.RedactModelAuto = cur.RedactModelAuto           // set on its own (masking)
+	in.RedactModelDir = cur.RedactModelDir             // set on its own (privacy-model's folder)
 	in.RedactActions = cur.RedactActions               // set on their own (redact-actions)
 	in.RedactAllow = cur.RedactAllow                   // set on its own (redact-allow)
 	in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models, #1867)

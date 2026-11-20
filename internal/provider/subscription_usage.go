@@ -218,6 +218,10 @@ type SubscriptionQuota struct {
 	// ReadDeferred distinguishes a reading deliberately not requested from
 	// a request that failed. AsOf and ReadAt still date the cached values.
 	ReadDeferred bool `json:"readDeferred,omitempty"`
+	// ReadError is why the reading AsOf stands in for failed, so a
+	// stand-in that has lasted days says why (tmr11235 on X: agy-cli's
+	// quota "as of" four days back, with no reason given).
+	ReadError string `json:"readError,omitempty"`
 	// ReadAt is when what is shown was read: a key's balance, kept a
 	// minute (KeyBalances), or an account's allowance, which a cache (a
 	// minute's, or a Claude account's until Claude Code tells it again)
@@ -1063,8 +1067,20 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 		}
 		return ws, err
 	}
-	// a whole reading: a window it leaves out hasn't started
-	ws = claudeWithUnstarted(ws)
+	// a whole reading: a window it leaves out hasn't started, unless the
+	// account is seen used with none (claudeNoFiveHour)
+	prev, prevAt := e.ws, e.at
+	if prev == nil {
+		if q, ok := lastReading("claude/" + key); ok {
+			prev, prevAt = q.Windows, e.at
+			if q.ReadAt != nil {
+				prevAt = *q.ReadAt
+			}
+		}
+	}
+	if !claudeNoFiveHour(prev, prevAt, ws, now) {
+		ws = claudeWithUnstarted(ws)
+	}
 	c.Lock()
 	if c.m == nil {
 		c.m = map[string]claudeUsageEntry{}
