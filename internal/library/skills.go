@@ -64,6 +64,9 @@ type Skill struct {
 	// Gone is when an update or a check found its source without it: it
 	// was removed there (skill_gone.go). Kept on this computer only.
 	Gone string `json:"gone,omitempty"`
+	// Dangling is a skill linked in from a folder that is gone
+	// (skill_dangling.go): given to no agent. Set at each sync and read.
+	Dangling bool `json:"-"`
 	// OffHere turns the skill off on this computer alone (hanslin1666 on
 	// Discord): no agent here gets it, whatever Agents says. Agents is
 	// what a sync carries and stays as the other computers have it; this
@@ -108,7 +111,7 @@ type HomeEntry struct {
 // gives reports whether the agent id gets the skill on this computer: it
 // is ticked for it, and the skill isn't turned off here.
 func (s *Skill) gives(id string) bool {
-	return s != nil && !s.OffHere && slices.Contains(s.Agents, id)
+	return s != nil && !s.OffHere && !s.Dangling && slices.Contains(s.Agents, id)
 }
 
 // SkillHere turns a skill on or off on this computer alone. Which agents
@@ -206,7 +209,12 @@ type meta struct {
 	// when the user types /name, never on the model's own (sunset3279 on
 	// Discord). False when the front matter doesn't parse, or the value
 	// isn't a bool: not known.
-	Manual bool `yaml:"disable-model-invocation" json:"-"`
+	Manual bool `yaml:"disable-model-invocation,omitempty" json:"-"`
+	// Typed is its user-invocable: false for a skill only the model
+	// calls, which no agent offers to type; nil when it isn't said.
+	Typed *bool `yaml:"user-invocable,omitempty" json:"-"`
+	// Hint is its argument-hint, which Claude Code shows after /name.
+	Hint string `yaml:"argument-hint,omitempty" json:"-"`
 }
 
 func readMeta(dir string) (meta, bool) {
@@ -787,8 +795,11 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 	// the skills the router lists here (skill_router.go): no link of
 	// their own
 	routed := l.routedFor(t, sharers, cp, inShared)
+	// and the ones the user types still, each by a stub of its own
+	slash := slashFor(t, all, sharers, routed)
+	dropStubs(t, slash, res)
 	if !t.Gone {
-		defer l.placeRouter(t, routed, a, res)
+		defer l.placeRouter(t, routed, slash, a, res)
 	}
 	var mine []string
 	for _, name := range a.Skills {
@@ -1777,6 +1788,12 @@ func (l *Library) offered(p *Probe, path string, shown bool) {
 // source and given to the agents like any other. The name can't be one the
 // library has, one an agent has of its own, or a folder in the way.
 func CreateSkill(name, description string, agents []string) (*Result, error) {
+	return createSkill(name, description, agents, "Write what the agent should do when this skill is used.\n", nil)
+}
+
+// createSkill is CreateSkill with body after the SKILL.md's heading, and
+// files beside it, by name.
+func createSkill(name, description string, agents []string, body string, files map[string]string) (*Result, error) {
 	name = strings.TrimSpace(name)
 	if err := checkName("skill", name); err != nil {
 		return nil, err
@@ -1804,13 +1821,19 @@ func CreateSkill(name, description string, agents []string) (*Result, error) {
 		if err != nil {
 			return err
 		}
-		text := "---\n" + string(head) + "---\n\n# " + name + "\n\nWrite what the agent should do when this skill is used.\n"
+		text := "---\n" + string(head) + "---\n\n# " + name + "\n\n" + body
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(text), 0o644); err != nil {
 			os.RemoveAll(dir)
 			return err
+		}
+		for n, b := range files {
+			if err := os.WriteFile(filepath.Join(dir, n), []byte(b), 0o644); err != nil {
+				os.RemoveAll(dir)
+				return err
+			}
 		}
 		ag := slices.Clone(agents)
 		slices.Sort(ag)
@@ -2247,9 +2270,7 @@ func skillsAgents(names, agents []string, on bool) (*Result, error) {
 // RemoveSkill takes a skill out of the library and every agent; its folder
 // is kept aside with the backups, never just deleted.
 func RemoveSkill(name string) (*Result, error) {
-	return change(func(l *Library) error {
-		return removeSkill(l, name, time.Now().Format("2006-01-02_15-04-05.000"))
-	})
+	return RemoveSkillsHow([]string{name}, true)
 }
 
 // RemoveSkills takes the skills named out of the library and every agent
@@ -2257,6 +2278,16 @@ func RemoveSkill(name string) (*Result, error) {
 // together, in one backup, and a folder of the user's only unlinked. One
 // that can't be taken out stays, and is said in Unremoved.
 func RemoveSkills(names []string) (*Result, error) {
+	return RemoveSkillsHow(names, true)
+}
+
+// RemoveSkillsHow is RemoveSkills, with keep false deleting the library's
+// folders rather than moving them to the backups (Eternalfate__ on X: a
+// skill removed is to be gone, not kept somewhere on disk). Only the
+// library's own folder is deleted: a folder of the user's it links to
+// (~/.agents/skills, or anywhere else) is only unlinked, as with keep,
+// and one brought in from the agents still goes back to them.
+func RemoveSkillsHow(names []string, keep bool) (*Result, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("no skills to remove")
 	}
@@ -2264,6 +2295,9 @@ func RemoveSkills(names []string) (*Result, error) {
 	var failed []Problem
 	res, err := change(func(l *Library) error {
 		stamp := time.Now().Format("2006-01-02_15-04-05.000")
+		if !keep {
+			stamp = ""
+		}
 		for _, name := range names {
 			if err := removeSkill(l, name, stamp); err != nil {
 				failed = append(failed, Problem{What: "skill:" + name, Error: err.Error()})
@@ -2281,8 +2315,8 @@ func RemoveSkills(names []string) (*Result, error) {
 }
 
 // removeSkill takes a skill out of l, its folder moved aside to the backup
-// stamped so, or its link to a folder of the user's taken away. The entry
-// goes only once its folder has.
+// stamped so (with no stamp, deleted), or its link to a folder of the
+// user's taken away. The entry goes only once its folder has.
 func removeSkill(l *Library, name, stamp string) error {
 	i := slices.IndexFunc(l.Skills, func(s *Skill) bool { return s.Name == name })
 	if i < 0 {
@@ -2304,6 +2338,13 @@ func removeSkill(l *Library, name, stamp string) error {
 		// its folder is gone already: only the entry goes
 	case err == nil && (fi.Mode()&fs.ModeSymlink != 0 || linked(p)): // a junction too, as the page says
 		if err := os.Remove(p); err != nil { // a folder of the user's: only the link goes
+			return err
+		}
+	case stamp == "":
+		// deleted, as asked: p is the library's own folder, not a link
+		// (that case is above), and RemoveAll takes a link inside it away
+		// without following it
+		if err := os.RemoveAll(p); err != nil {
 			return err
 		}
 	default:
@@ -2483,9 +2524,10 @@ func foundSkills(l *Library) []FoundSkill {
 			f := byName[name]
 			// magpie's link to the library's folder is an agent having the
 			// one found there
-			// and the skill router's entry is magpie's own (skill_router.go)
+			// and the skill router's entry and slash stubs are magpie's own
+			// (skill_router.go)
 			if strings.HasPrefix(name, ".") || ours(p, name) && (f == nil || f.Library == "") || l.skill(name) != nil || !nameRe.MatchString(name) ||
-				name == RouterSkill && routerOurs(p) {
+				routerOurs(p) {
 				continue
 			}
 			m, ok := readMeta(p)
@@ -2804,9 +2846,7 @@ func putBack(s *Skill) (bool, error) {
 // agents only linked to is left where it is, and so is another skill by
 // that name (Others): that is another skill.
 func RemoveFoundSkill(name string) (*Result, error) {
-	return change(func(l *Library) error {
-		return removeFound(foundSkills(l), name)
-	})
+	return RemoveFoundSkillsHow([]string{name}, true)
 }
 
 // RemoveFoundSkills takes the skills named, of those the agents have of
@@ -2815,6 +2855,13 @@ func RemoveFoundSkill(name string) (*Result, error) {
 // be taken out stays, and is said in Unremoved; the others go all the
 // same. Only when none went does the change fail, with the first reason.
 func RemoveFoundSkills(names []string) (*Result, error) {
+	return RemoveFoundSkillsHow(names, true)
+}
+
+// RemoveFoundSkillsHow is RemoveFoundSkills, with keep false deleting the
+// skills' folders rather than moving them to the backups. Links are only
+// taken away either way: a folder they lead to stays.
+func RemoveFoundSkillsHow(names []string, keep bool) (*Result, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("no skills to remove")
 	}
@@ -2823,7 +2870,7 @@ func RemoveFoundSkills(names []string) (*Result, error) {
 	res, err := change(func(l *Library) error {
 		found := foundSkills(l)
 		for _, name := range names {
-			if err := removeFound(found, name); err != nil {
+			if err := removeFound(found, name, keep); err != nil {
 				failed = append(failed, Problem{What: "skill:" + name, Error: err.Error()})
 			}
 		}
@@ -2832,15 +2879,16 @@ func RemoveFoundSkills(names []string) (*Result, error) {
 		}
 		return nil
 	})
-	if res != nil {
+	if res != nil && len(names) > 1 {
 		res.Unremoved = failed
 	}
 	return res, err
 }
 
 // removeFound takes the skill of that name, of those found in the agents,
-// out of each place it is: links taken away, folders set aside.
-func removeFound(found []FoundSkill, name string) error {
+// out of each place it is: links taken away, folders set aside (with keep
+// false, deleted).
+func removeFound(found []FoundSkill, name string, keep bool) error {
 	i := slices.IndexFunc(found, func(f FoundSkill) bool { return f.Name == name })
 	if i < 0 {
 		return fmt.Errorf("no agent has a skill called %s that the library hasn't", name)
@@ -2883,6 +2931,18 @@ func removeFound(found []FoundSkill, name string) error {
 		}
 		if linked(e.p) {
 			if err := os.Remove(e.p); err != nil {
+				return err
+			}
+			continue
+		}
+		if !keep {
+			// not a link (above): the skill's own folder, deleted as asked.
+			// One in ~/.agents/skills too (@Eternalfate__ on X: most skills
+			// are there, so the sheet never had the tick): it leaves that
+			// folder either way, and the other tools reading it lose it
+			// either way; kept, it only sat in the backups. A folder the
+			// entry links to is never reached here (above)
+			if err := os.RemoveAll(e.p); err != nil {
 				return err
 			}
 			continue

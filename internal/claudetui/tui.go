@@ -498,6 +498,75 @@ var (
 	trustSettle = 300 * time.Millisecond
 )
 
+var (
+	// the option rows a question is answered on: the unselected row has
+	// no ❯, so they are matched by their words
+	noRow     = lazyre.New(`No,\s*exit`)
+	trustRow  = lazyre.New(`Yes,\s*I trust`)
+	bypassRow = lazyre.New(`Yes,\s*I accept`)
+	trustAsk  = "trust this folder"
+	bypassAsk = "Bypass Permissions mode"
+	chromeAsk = "keep browser tools off"
+	themeAsk  = "Choose the text style"
+	// the most a dialog draws under its option rows: its footer
+	// ("Enter to confirm · Esc to cancel"). A resumed conversation that
+	// talks of the dialog has its prompt box and status line there.
+	dialogFoot = 160
+	// the most a dialog draws under its heading: its options, and a
+	// preview of the choice
+	dialogBody = 1500
+)
+
+// tailAfter is how many characters of words follow byte offset end.
+func tailAfter(words string, end int) int {
+	return utf8.RuneCountInString(words[end:])
+}
+
+// optionDialog is whether words end on a question: its option rows, a No
+// and the yes row, with only the dialog's footer under them, and its
+// words ask at most dialogBody before them or in them. The question's
+// words alone are not it: a resumed conversation's history can hold them
+// (#, @alisenray: "Bypass Permissions mode" in the history failed every
+// --resume at 45s with the prompt box showing). Nor do the words come
+// first: Claude Code (2.1.327, 2.1.329) heads the trust question "Quick
+// safety check", and "trust this folder" is in its Yes row alone, under
+// the No row. A check that wanted the words above both rows never saw
+// the question, and every run of a saved account in a caller's folder
+// waited out its 45s on it (@ahz2ygnhjmIJ0E0 on X).
+func optionDialog(words, ask string, yes *lazyre.RE) bool {
+	start, end := len(words), -1
+	for _, re := range []*lazyre.RE{noRow, yes} {
+		m := re.FindAllStringIndex(words, -1)
+		if len(m) == 0 {
+			return false
+		}
+		start = min(start, m[len(m)-1][0])
+		end = max(end, m[len(m)-1][1])
+	}
+	if tailAfter(words, end) > dialogFoot {
+		return false
+	}
+	// the words can end in the footer's reach: the Yes row "Yes, I
+	// trust" holds "trust this folder", past what the row matched
+	h := strings.LastIndex(words, ask)
+	return h >= 0 && (h >= start || tailAfter(words[:start], h) <= dialogBody)
+}
+
+// headingDialog is whether words end on a screen drawn under heading ask
+// (an onboarding screen, the Claude in Chrome offer, sign-in): the
+// heading is in the bottom of the screen, not further up in history.
+func headingDialog(words, ask string) bool {
+	h := strings.LastIndex(words, ask)
+	return h >= 0 && tailAfter(words, h+len(ask)) <= dialogBody
+}
+
+// lastMatchNear is whether re matches in words with at most n characters
+// after its last match.
+func lastMatchNear(re *lazyre.RE, words string, n int) bool {
+	m := re.FindAllStringIndex(words, -1)
+	return len(m) > 0 && tailAfter(words, m[len(m)-1][1]) <= n
+}
+
 // lastAt is where re's last match in p starts, -1 with none.
 func lastAt(re *lazyre.RE, p string) int {
 	m := re.FindAllStringIndex(p, -1)
@@ -577,9 +646,11 @@ func (s *shim) ready() error {
 	if folder == "" {
 		folder = "the folder it runs in"
 	}
-	asking := "asked whether to trust " + folder + ", not answered"
-	bypassAsking := "asked to accept running in Bypass Permissions mode, not answered"
-	chromeAsking := "asked whether to use Claude in Chrome, not answered"
+	// each said as "Claude Code <asking> in <wait>" (Unanswered)
+	unanswered := strings.TrimSuffix(Unanswered, " in ")
+	asking := "asked whether to trust " + folder + unanswered
+	bypassAsking := "asked to accept running in Bypass Permissions mode" + unanswered
+	chromeAsking := "asked whether to use Claude in Chrome" + unanswered
 	onboard := func(screen, key string) error {
 		if shownAt[screen].IsZero() {
 			shownAt[screen] = time.Now()
@@ -604,30 +675,30 @@ func (s *shim) ready() error {
 		now, _ := s.looks()
 		nowWords := strings.Join(strings.Fields(now+" "+p), " ")
 		doing := "showed no prompt"
-		if strings.Contains(nowWords, "trust this folder") {
+		if optionDialog(nowWords, trustAsk, trustRow) {
 			doing = asking
-		} else if strings.Contains(nowWords, "Bypass Permissions mode") {
+		} else if optionDialog(nowWords, bypassAsk, bypassRow) {
 			doing = bypassAsking
-		} else if strings.Contains(nowWords, "keep browser tools off") {
+		} else if headingDialog(nowWords, chromeAsk) {
 			doing = chromeAsking
 		}
 		s.doing.Store(doing)
 		switch {
-		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
+		case optionDialog(words, trustAsk, trustRow) && os.Getenv(TrustEnv) != "1":
 			return errUntrusted
-		case strings.Contains(words, "Bypass Permissions mode") && os.Getenv(BypassEnv) != "1":
+		case optionDialog(words, bypassAsk, bypassRow) && os.Getenv(BypassEnv) != "1":
 			return fmt.Errorf("Claude Code's interactive mode runs in Bypass Permissions mode and asks to accept it, which only its user answers: %s", s.lastScreen())
-		case signIn.MatchString(p):
+		case signIn.MatchString(p) && lastMatchNear(signIn, words, dialogBody):
 			return fmt.Errorf("Claude Code's interactive mode asks to sign in: %s", s.lastScreen())
-		case firstRun.MatchString(words):
+		case lastMatchNear(firstRun, words, dialogFoot):
 			if err := onboard("notes", "\r"); err != nil {
 				return err
 			}
-		case terminalSetup.MatchString(words):
+		case lastMatchNear(terminalSetup, words, dialogFoot):
 			if err := onboard("terminal", "\x1b"); err != nil {
 				return err
 			}
-		case (strings.Contains(p, "trust this folder") || strings.Contains(words, "Bypass Permissions mode")) && answered < 3:
+		case (optionDialog(words, trustAsk, trustRow) || optionDialog(words, bypassAsk, bypassRow)) && answered < 3:
 			// the choice is the last one drawn after ❯, "No, exit" at
 			// first. A key sent as the question is first drawn can be lost
 			// to its being drawn again on No, so Enter goes only to a Yes
@@ -655,7 +726,7 @@ func (s *shim) ready() error {
 					_, _ = io.WriteString(s.pty, "\x1b[B")
 				}
 			}
-		case strings.Contains(words, "keep browser tools off"):
+		case headingDialog(words, chromeAsk):
 			// Claude in Chrome found: kept off, as the bridge runs it
 			// --no-chrome. Answered once the offer has stayed drawn, as
 			// the onboarding is: 2.1.319 turns away a key sent just after
@@ -664,7 +735,7 @@ func (s *shim) ready() error {
 			if err := onboard("chrome", "\x1b"); err != nil {
 				return fmt.Errorf("Claude Code's interactive mode asks whether to use Claude in Chrome and takes no answer; run Claude Code once in a terminal and answer it: %s", s.lastScreen())
 			}
-		case strings.Contains(words, "Choose the text style"):
+		case headingDialog(words, themeAsk):
 			if err := onboard("theme", "\r"); err != nil {
 				return err
 			}
