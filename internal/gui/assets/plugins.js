@@ -227,6 +227,7 @@
   }
 
   async function load() {
+    window.pmPartners?.again();
     if (!mine && !listings) draw();
     const parts = [
       loadMine().then(() => { draw(); window.renderPluginDot?.(); }),
@@ -236,6 +237,7 @@
       providers ? null : loadProviders().then(drawBody, () => {}),
     ];
     import("./plugincounts.js").then(() => window.pmCounts.load(drawBody), () => {});
+    import("./pluginpartners.js").then(drawBody, () => {});
     await Promise.all(parts);
     askNPM();
     askGit();
@@ -244,6 +246,9 @@
   // the sidebar's dot, followed: Plugins opens on Installed, where the
   // plugins with an update are named at the top
   window.pluginTabTo = (id) => { tab = id; };
+  // opened from another page (app.js show): on Installed when an update
+  // waits, and the opening counted for its partners (provider.CountPage)
+  window.pmOpen = (up) => { if (up) tab = "installed"; api("page", { page: "plugins" }).catch(() => {}); };
   // pluginQuery: Discover, looking for q (the add sheet found nothing by it)
   window.pluginQuery = (q) => {
     query = q;
@@ -1046,6 +1051,8 @@
     const match = (l) => !f || [l.name, l.package, summary(l), (l.providers || []).join(" "), l.npm?.publisher || "", l.github?.owner || ""].join(" ").toLowerCase().includes(f);
     const all = everything(match);
     const out = [];
+    const partners = window.pmPartners?.({ f, all: everything(() => true), kindPick, srcPick, onlyNew, entryOf, kindOf, opens, npm, logo, actionFor, glyph, OUTL });
+    if (partners) out.push(partners);
     if (!f) {
       const rec = !kindPick && recSection(all);
       if (rec) out.push(rec);

@@ -191,6 +191,23 @@ type fieldJSON struct {
 	// List is, in place of Options, which of the state's OptionLists the
 	// field offers, from 1 (shareOptions); 0 when Options is its own
 	List int `json:"list,omitempty"`
+	// Unserved are the user's routing groups a model field that offers
+	// groups doesn't, each with why (provider.UnservedGroups): its
+	// picker shows them, not to be picked
+	Unserved []unservedJSON `json:"unserved,omitempty"`
+}
+
+// unservedJSON is a routing group a model field doesn't offer: its value
+// as the field would take it, and why it isn't offered.
+type unservedJSON struct {
+	Value string   `json:"value"`
+	Label string   `json:"label"`
+	Icons []string `json:"icons,omitempty"`
+	Ref   string   `json:"ref"`
+	Why   string   `json:"why"`
+	// Pick: the gateway serves it, only the agent's lists leave it out;
+	// picked, it is put back in them (provider.ShowFor) and set
+	Pick bool `json:"pick,omitempty"`
 }
 
 type agentJSON struct {
@@ -1725,7 +1742,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		appPageRoutes(mux)
 		remoteRoutes(mux, w)
 	}
-	privacyModelRoutes(mux)
+	privacyModelRoutes(mux, w)
 	maskingRoutes(mux)
 	builtinRoutes(mux)
 	mux.HandleFunc("GET /api/settings", func(rw http.ResponseWriter, r *http.Request) {
@@ -2270,6 +2287,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// Settings › Proxy's Test (#2076): the address Cloudflare sees a request
 	// from through the proxy in force, and without it
 	mux.HandleFunc("POST /api/proxy/check", handleProxyCheck)
+	mux.HandleFunc("POST /api/egress/check", handleEgressCheck)
 	proxyRoutes(mux)
 	mux.HandleFunc("POST /api/pipelines/check", handlePipelineCheck)
 	mux.HandleFunc("POST /api/relay-check", handleRelayCheck)
@@ -3802,6 +3820,16 @@ func fail(rw http.ResponseWriter, err error) {
 			out["detail"] = redactProxyErr(why.Err.Error())
 		}
 	}
+	// a remote MCP server whose sign-in magpie never got an answer from:
+	// the network, said in the reader's language with the way it went,
+	// not Go's words alone (CHENGJIAHEGOXIS on X)
+	var unreachable *mcpauth.UnreachableError
+	if errors.As(err, &unreachable) {
+		out["code"], out["host"], out["proxy"] = "unreachable", unreachable.Host, unreachable.Proxy
+		out["detail"] = redactProxyErr(unreachable.Err.Error())
+		out["error"] = redactProxyErr(out["error"])
+		out["said"] = unreachableSaid[unreachable.Proxy != ""]
+	}
 	var noModels *agent.NoModelsError
 	if errors.As(err, &noModels) {
 		out["code"] = "no_models"
@@ -3931,6 +3959,15 @@ func countClient(m map[string]string, client, as string) (map[string]string, err
 var bunSaid = map[string]string{
 	"windows": "Bun, which runs plugins, can't start on this version of Windows: it needs Windows 10 version 1809 or later, or Windows Server 2019 or later. Update Windows to use plugins, or set MAGPIE_BUN to a bun that runs here.",
 	"cpu":     "Bun, which runs plugins, can't start on this computer's processor: it needs an x64 processor with SSE4.2 (Intel or AMD from 2008 on; in a virtual machine, a CPU type that passes it through). Run magpie on such a processor to use plugins, or set MAGPIE_BUN to a bun that runs here.",
+}
+
+// unreachableSaid is what the page says for a remote MCP server magpie
+// got no answer from when starting its sign-in, by whether the request
+// went through a proxy: an i18n.js key like bunSaid's, with {host},
+// {proxy} and {detail} filled from the reply
+var unreachableSaid = map[bool]string{
+	false: "magpie got no answer from {host}, going direct with no proxy, so the sign-in couldn't start. The server's sign-in isn't the problem: the network between this computer and {host} is. Give magpie a proxy in Settings › Network and sharing, or try another network, then click Sign in again ({detail})",
+	true:  "magpie got no answer from {host} through the proxy {proxy}, so the sign-in couldn't start. The server's sign-in isn't the problem: the way to {host} is. Check that the proxy reaches {host}, or pick another in Settings › Network and sharing, then click Sign in again ({detail})",
 }
 
 // linkSaid is what the page says for an app's import link that nothing
