@@ -68,6 +68,7 @@ import (
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/egress"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
@@ -77,14 +78,15 @@ import (
 )
 
 type subscriptionBridge struct {
-	mu      sync.Mutex
-	runs    map[string]*subscriptionRun // callback token → run
-	calls   map[string]*subscriptionRun // tool_use id → run
-	idle    map[string]*subscriptionRun // conversation so far (turnKey) → run
-	shelf   map[string]*savedSession    // conversation so far (turnKey) → its saved session
-	baseURL string
-	sweep   sync.Once
-	swept   sync.Map // Claude Code's project folders sweepSessions went through
+	mu       sync.Mutex
+	runs     map[string]*subscriptionRun // callback token → run
+	calls    map[string]*subscriptionRun // tool_use id → run
+	idle     map[string]*subscriptionRun // conversation so far (turnKey) → run
+	shelf    map[string]*savedSession    // conversation so far (turnKey) → its saved session
+	resuming map[*savedSession]bool      // taken off the shelf, not yet owned by a run
+	baseURL  string
+	sweep    sync.Once
+	swept    sync.Map // Claude Code's project folders sweepSessions went through
 	// lost is why each run that had a conversation ended, by that
 	// conversation (convKey), and lostCalls by the tool calls it waited
 	// on or was last handed results for, for the log of a request that
@@ -853,8 +855,14 @@ func (c claudeCLI) env(env []string, configDir string) []string {
 // a SOCKS one bridged: Claude Code is built with Bun, which takes only
 // http:// and https:// proxies (#2651). One in a WSL distro reaches the
 // bridge only when the distro shares Windows' loopback.
+// A run the user's region hold keeps back (egress.Hold) gets its error,
+// and no Claude Code starts: a warm-up, a usage read or a turn alike.
 func (c claudeCLI) proxied(ctx context.Context, env []string) ([]string, error) {
-	return netproxy.EnvForBunWith(claudeProxy(ctx), env, c.wsl == nil || c.wsl.Host == "")
+	choice := claudeProxy(ctx)
+	if err := egress.Hold(ctx, choice); err != nil {
+		return nil, err
+	}
+	return netproxy.EnvForBunWith(choice, env, c.wsl == nil || c.wsl.Host == "")
 }
 
 // file is where this Claude Code reads a file of magpie's at path: one in
@@ -935,7 +943,15 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
 	var noStart *tuiNoStart
 	if errors.As(err, &noStart) {
 		// never tried again as -p (claudeTUIErr)
-		return nil, nil, claudeTUIErr("Claude Code's interactive mode didn't start: " + err.Error())
+		err := claudeTUIErr("Claude Code's interactive mode didn't start: " + err.Error())
+		if noStart.asked {
+			// a question Claude Code asks the same under every account:
+			// no account's fault, and the next isn't asked. A 502 was
+			// asked of each account in turn, each waiting out its 45s
+			// (@ahz2ygnhjmIJ0E0 on X)
+			return nil, nil, &tuiRefusal{err}
+		}
+		return nil, nil, err
 	}
 	var full *claudeFull
 	var refused *cliSchemaRefused
@@ -1344,6 +1360,9 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	if tui && !client {
 		// a saved account's run in magpie's folder is never asked (#4830)
 		trustWork(binary, configDir, work)
+	} else if tui {
+		// nor is one in the caller's folder (@ahz2ygnhjmIJ0E0 on X)
+		trustCaller(binary, configDir, work)
 	}
 	cmd.Env = binary.env(binary.asRoot(env), configDir)
 	if tui {
@@ -1452,7 +1471,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 			var unanswered *controlUnanswered
 			if tui && errors.As(err, &unanswered) {
 				// the helper hung: the turn fails (start)
-				return nil, nil, &tuiNoStart{err}
+				return nil, nil, &tuiNoStart{err: err}
 			}
 			if tui && run.saidOnEnd("claude-tui: ") && !run.saidOnEnd(claudetui.EndedEarly) {
 				// the helper ended saying why Claude Code didn't come up,
@@ -1460,7 +1479,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 				// load the session does: a new one told the whole
 				// conversation waited out the same 45s, and the turn was
 				// answered 502 after twice that (sowhynot)
-				return nil, nil, &tuiNoStart{err}
+				return nil, nil, &tuiNoStart{err: err, asked: run.saidOnEnd(claudetui.Unanswered)}
 			}
 			return nil, nil, err
 		}
@@ -1540,8 +1559,13 @@ type controlUnanswered struct{ what string }
 func (e *controlUnanswered) Error() string { return "Claude Code has not " + e.what }
 
 // tuiNoStart is a run whose interactive mode's helper never answered its
-// initialize request: start fails the turn, saying so.
-type tuiNoStart struct{ err error }
+// initialize request: start fails the turn, saying so. asked is that the
+// helper ended on a question of Claude Code's it couldn't get answered
+// (claudetui.Unanswered).
+type tuiNoStart struct {
+	err   error
+	asked bool
+}
 
 func (e *tuiNoStart) Error() string { return e.err.Error() }
 func (e *tuiNoStart) Unwrap() error { return e.err }
@@ -2855,16 +2879,24 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		}
 	}
 	delete(b.shelf, key)
+	if s != nil {
+		if b.resuming == nil {
+			b.resuming = make(map[*savedSession]bool)
+		}
+		b.resuming[s] = true
+	}
 	b.mu.Unlock()
 	if s == nil {
 		return nil
 	}
 	s.timer.Stop()
 	if !s.cachePrefix.accepts(req.cacheTail()) {
+		b.resumed(s)
 		s.discard()
 		return nil
 	}
 	if behind && !s.cutBehind() {
+		b.resumed(s)
 		s.discard()
 		return nil
 	}
@@ -3526,10 +3558,14 @@ func (b *subscriptionBridge) sweepSessions(dirs []string) {
 			continue
 		}
 		go func() {
+			kept, known := b.keptSessions()
+			if !known {
+				return
+			}
 			entries, _ := os.ReadDir(dir)
 			for _, e := range entries {
 				sid, ok := strings.CutSuffix(e.Name(), ".jsonl")
-				if !ok || e.IsDir() {
+				if !ok || e.IsDir() || kept[filepath.Join(dir, e.Name())] {
 					continue
 				}
 				if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > idleLongest+time.Minute {
@@ -4119,6 +4155,10 @@ func cleanClaudeEnvTTL(env []string, ttl string) []string {
 		"CLAUDECODE": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_SSE_PORT": true,
 		"CLAUDE_CODE_OAUTH_TOKEN": true, "CLAUDE_CODE_PROMPT_CACHE_TTL": true, "FORCE_PROMPT_CACHING_5M": true,
 		"CLAUDE_CODE_EXTRA_BODY": true, "ANTHROPIC_BETAS": true,
+	}
+	// magpie's routing names, never Anthropic's (claudeModelEnv)
+	for _, k := range claudeModelEnv {
+		blocked[k] = true
 	}
 	out := make([]string, 0, len(env)+3)
 	for _, e := range env {
@@ -7230,6 +7270,14 @@ func (b *subscriptionBridge) whyCallsLost(req *Request) string {
 
 func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
 	defer s.bridgeTurn()()
+	if err := awaitPredecessorSessions(r.Context()); err != nil {
+		if r.Context().Err() != nil {
+			return http.StatusServiceUnavailable, "waiting for the previous gateway to save Claude sessions: " + err.Error()
+		}
+		// what would have been resumed is replayed, as before the wait: a
+		// turn is not refused for the gateway it was handed over from
+		log.Printf("claude: going on without the previous gateway's saved sessions: %v", err)
+	}
 	owner := p.ID
 	if p.Account != nil {
 		owner += "\x00" + p.Account.User
@@ -7250,6 +7298,9 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
 		// a run let go past idleMost left its session for this turn, or
 		// the run whose calls another request answered first has it
 		from := s.subscription.unshelve(req, owner)
+		if from != nil {
+			defer s.subscription.resumed(from)
+		}
 		if from == nil {
 			from = req.branch
 		}
@@ -7724,6 +7775,12 @@ func bridgeFailed(name, msg string, status int) (int, string) {
 		return status, msg
 	case quotaSaid(msg):
 		return 429, msg
+	case name == "Claude Code" && claudeOffWords.MatchString(msg):
+		// the account on hold, as Claude Code says it with no status of
+		// the API's (account_on_hold): a 502 rested it a minute and asked
+		// it again; the account's own refusal, read as restricted
+		// (claudeAccountOff)
+		return http.StatusForbidden, msg
 	case unpastedSaid(name, msg):
 		// the same message fails the same way on every account and on
 		// every try: a 502 was asked again and again (ok123now on X)

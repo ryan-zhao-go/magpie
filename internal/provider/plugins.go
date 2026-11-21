@@ -78,6 +78,23 @@ const (
 	SubagentToPluginHeader = "X-Magpie-Subagent"
 )
 
+// CallerAgentHeader, CallerNameHeader and CallerViaHeader tell a plugin's
+// fetch the agent the request came from, as the gateway records it: its
+// id (claude), the name people know it by (Claude Code), and, for a
+// request another magpie passed on (a Remote magpie provider there), the
+// computers it came through, the agent's first, comma-separated. Each
+// value, and each computer, is percent-encoded UTF-8 (decodeURIComponent
+// reads it). A request from this computer has no via. A plugin on the
+// receiving magpie had only the request's text to go by, as the original
+// agent stayed in the gateway (@febsincos on X). The plugin host gives
+// them to chat.headers as input.caller too, and takes them off whatever
+// the plugin sends on, as it does the ones above.
+const (
+	CallerAgentHeader = "X-Magpie-Caller-Agent"
+	CallerNameHeader  = "X-Magpie-Caller-Name"
+	CallerViaHeader   = "X-Magpie-Caller-Via"
+)
+
 // warmPlugin starts p's plugin host and runs its account's loader, which
 // may renew the sign-in, under ctx and through the account's proxy: what
 // a plugin's first fetch waits for besides its vendor. A failure is left
@@ -473,11 +490,25 @@ func pluginPrice(m plugin.Model) (catalog.Price, bool) {
 func pluginAccountCatalog(pp plugin.Provider, key string) []catalog.Model {
 	all := pluginCatalog(pp)
 	for _, a := range pp.Accounts {
-		if a.Key == key && a.Models != nil {
+		if a.Key == key && toldList(a) != nil {
 			return slices.DeleteFunc(all, func(m catalog.Model) bool { return !slices.Contains(a.Models, m.ID) })
 		}
 	}
 	return all
+}
+
+// toldList is the models account a has as its plugin told them, nil when
+// it told none: a list that fell back (the plugin's own defaults, its
+// vendor's list for the account unread, with no list read before for
+// keepListed to keep) says nothing of the account's plan, as a built-in
+// account whose fetch failed is taken to have every model. bitssly on X
+// (商汤小浣熊): one of three accounts fell back, and Routing left it out
+// of every model the plugin's defaults lack.
+func toldList(a plugin.Account) []string {
+	if a.FellBack {
+		return nil
+	}
+	return a.Models
 }
 
 // PluginListError is why the plugin couldn't list the account at key's
@@ -516,7 +547,7 @@ func pluginServedCatalog(pp plugin.Provider, keys []string) []catalog.Model {
 	listed := map[string]bool{}
 	for _, k := range keys {
 		i := slices.IndexFunc(pp.Accounts, func(a plugin.Account) bool { return a.Key == k })
-		if i < 0 || pp.Accounts[i].Models == nil {
+		if i < 0 || toldList(pp.Accounts[i]) == nil {
 			return all
 		}
 		for _, m := range pp.Accounts[i].Models {
@@ -534,7 +565,7 @@ func (a *Account) pluginLists(model string) bool {
 		pp = cur
 	}
 	for _, ac := range pp.Accounts {
-		if ac.Key == a.pluginKey && ac.Models != nil {
+		if ac.Key == a.pluginKey && toldList(ac) != nil {
 			return slices.Contains(ac.Models, model)
 		}
 	}
@@ -835,14 +866,28 @@ func pluginRequestBase(pp plugin.Provider, m plugin.Model, loader string) string
 // clears the mark.
 const SignInHeader = "X-Magpie-Sign-In"
 
+// SentModelHeader is how a plugin says the model id it sent the vendor,
+// when it picks one magpie can't: Antigravity's plugin sends a family as
+// the variant of it the effort picks from the account's own list
+// (gemini-3.1-pro at high goes as gemini-3.1-pro-high). The gateway keeps
+// it as the try's and the ledger row's Wire, read from a plugin's answer
+// only; like every X-Magpie- header it never reaches the agent.
+const SentModelHeader = "X-Magpie-Sent-Model"
+
 // ModelUnserved are how a vendor says the model isn't one it serves this
 // key, or this way — words another provider, or key, may not answer with
 // (the gateway's unservedWords, read decoded: catalog.Words): ModelScope's
 // 400 for a model id none of its instances serves, "Model id : … , has no
 // provider supported" (#2887), and Azure OpenAI's DeploymentNotFound, whose
 // message "The API deployment for this resource does not exist" a relay
-// passes on as a 400 (its 404 fails over by its status already).
-var ModelUnserved = lazyre.New(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
+// passes on as a 400 (its 404 fails over by its status already). And
+// Anthropic's 404 for a model the account may not call: through Claude
+// Code "There's an issue with the selected model (claude-mythos-5-2). It
+// may not exist or you may not have access to it.", from the API
+// {"type":"not_found_error","message":"model: claude-mythos-5-2"} — that
+// model rests on that account, not the account for all its models
+// (ZacharyZhang on X).
+var ModelUnserved = lazyre.New(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|may not exist or you may not have access|unknown|invalid)|not_found_error.{0,40}"model: |(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
 
 // signInWords are words of a refusal about the sign-in itself, which a
 // model named beside them doesn't make the model's: "model gpt-x: invalid

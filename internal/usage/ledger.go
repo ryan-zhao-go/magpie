@@ -586,7 +586,7 @@ var ownPrice catalog.Price
 // one whose other models alone would stand for this call's, prices
 // nothing (#4278).
 func Pricer() func(Record) *catalog.Price {
-	prices := map[[7]string]*catalog.Price{}
+	prices := map[[8]string]*catalog.Price{}
 	// each provider's rate windows as the same read of the prices saw
 	// them: the windows are held once (BasePriceIn), each record's rate
 	// read at its own time (provider.RateAt), so a window that opens
@@ -607,11 +607,12 @@ func Pricer() func(Record) *catalog.Price {
 		// its calls apart from the provider's other keys
 		key := r.ProviderKeyID
 		tier := r.billedTier()
-		k := [7]string{id, r.Model, served, r.SessionProvider, r.Effort, key, tier}
+		agy := r.Provider == UnknownProvider && agyLocal(r.Agent)
+		k := [8]string{id, r.Model, served, r.SessionProvider, r.Effort, key, r.tierKey(tier, served), strconv.FormatBool(agy)}
 		if pr, ok := prices[k]; ok {
 			return atWindow(pr, windows[id], r.Time)
 		}
-		a := priceAsk{ID: id, Model: r.Model, Served: served, SessionProvider: r.SessionProvider, Effort: r.Effort, Key: key, Unknown: r.Provider == UnknownProvider}
+		a := priceAsk{ID: id, Model: r.Model, Served: served, SessionProvider: r.SessionProvider, Effort: r.Effort, Key: key, Unknown: r.Provider == UnknownProvider, Agy: agy}
 		pr, ws := basePriceIn(s, wires, a)
 		noteAsk(a.ask(), priceAnswer(pr, ws))
 		if pr != nil {
@@ -622,7 +623,7 @@ func Pricer() func(Record) *catalog.Price {
 		} else {
 			// Fast and Ultrafast bill at more than the standard price
 			// (Archivemylife on X: a Fast call read at the standard one)
-			pr = tierPriced(pr, tier, served, r.Model)
+			pr = tierPriced(pr, tier, r.Time, served, r.Model)
 		}
 		prices[k] = pr
 		return atWindow(pr, ws, r.Time)
@@ -633,8 +634,10 @@ func Pricer() func(Record) *catalog.Price {
 // for the tier when pr is that model's standard price, the model that ran
 // or the one asked for (catalog.TierPrice), else pr. The rows hold the
 // tier's price, so the question is noted: a catalog that prices the tier
-// otherwise names the request index anew.
-func tierPriced(pr *catalog.Price, tier string, models ...string) *catalog.Price {
+// otherwise names the request index anew. at is the call's time: a tier
+// whose rate changes on a date (catalog.TierTimes) is priced at the rate
+// of its day.
+func tierPriced(pr *catalog.Price, tier string, at time.Time, models ...string) *catalog.Price {
 	if pr == nil || tier == "" {
 		return pr
 	}
@@ -643,17 +646,33 @@ func tierPriced(pr *catalog.Price, tier string, models ...string) *catalog.Price
 		if model == "" {
 			continue
 		}
-		tp, ok := catalog.TierPrice(*pr, model, tier)
+		tp, ok := catalog.TierPrice(*pr, model, tier, at)
 		answer := ""
 		if ok {
 			answer = priceAnswer(&tp, nil)
 		}
-		noteAsk(strings.Join([]string{"t", model, tier, std}, askSep), answer)
+		q := []string{"t", model, tier, std}
+		if _, era := catalog.TierTimes(model, tier, at); era >= 0 {
+			q = append(q, strconv.Itoa(era))
+		}
+		noteAsk(strings.Join(q, askSep), answer)
 		if ok {
 			return &tp
 		}
 	}
 	return pr
+}
+
+// tierKey is tier as a price cache keys it: with the rate of the call's
+// day where the tier's rate changes on a date (catalog.TierTimes), so
+// calls either side of the change price apart.
+func (r Record) tierKey(tier string, models ...string) string {
+	for _, m := range append(models, r.Model) {
+		if _, era := catalog.TierTimes(m, tier, r.Time); m != "" && era >= 0 {
+			return tier + "@" + strconv.Itoa(era)
+		}
+	}
+	return tier
 }
 
 // billedTier is the service tier a record's call is priced at: the one
@@ -679,6 +698,10 @@ func (r Record) billedTier() string {
 type priceAsk struct {
 	ID, Model, Served, SessionProvider, Effort, Key string
 	Unknown                                         bool
+	// Agy is a call of the agy CLI's or the Antigravity app's own session
+	// log, which Antigravity counts Gemini 4 Carbon and Argon at their
+	// original price for (provider.AgyPriced)
+	Agy bool
 }
 
 // basePriceIn is a's price before its time's rate window, and the
@@ -725,6 +748,10 @@ func basePriceIn(s settings.Settings, wires map[string]string, a priceAsk) (*cat
 			// not the session provider's: none holds for this price
 			ws = nil
 		}
+	}
+	if pr != nil && a.Agy {
+		v := provider.AgyPriced(a.Model, *pr)
+		pr = &v
 	}
 	return pr, ws
 }
@@ -777,7 +804,7 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 	"effort", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "reasoning_tokens",
 	"cost_usd", "duration_ms", "ttft_ms", "status", "error", "session", "kind", "provider_key_id", "provider_key_name", "provider_account", "route_id",
 	"request_id", "endpoint", "error_message", "error_type", "source", "rejected", "session_provider", "session_account", "session_official_login", "caller_key_id", "caller_key_name", "response_id", "upstream",
-	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on", "tier_asked", "tier_sent", "tier_served", "upstream_stop", "credits"}
+	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on", "tier_asked", "tier_sent", "tier_served", "upstream_stop", "credits", "sent_model"}
 
 // WriteCSV writes rows as CSV, a header first (cache_write_tokens is every
 // cache write, as it always was, and the last two columns split it into
@@ -793,7 +820,8 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 // asked for, the one sent on the row's try and the one the reply said it
 // ran at, each empty when there was none (Record.TierAsked). credits is
 // what the reply said the call cost in its plan's credits, empty when it
-// said none (Record.Credits).
+// said none (Record.Credits). sent_model is the model id the request went
+// out to the vendor under, empty when it went as model (Record.Wire).
 func WriteCSV(w io.Writer, rows []Row) error {
 	cw := csv.NewWriter(w)
 	cw.Write(CSVHeader)
@@ -824,7 +852,7 @@ func WriteCSV(w io.Writer, rows []Row) error {
 			cost, strconv.FormatInt(r.Millis, 10), ttft, n(r.Status), strconv.FormatBool(r.Failed()), r.Session, r.Kind, r.ProviderKeyID, r.ProviderKeyName, r.Account(), routeID,
 			r.RequestID, r.Endpoint, r.Error, r.ErrType, r.Source, strconv.FormatBool(r.IsRejected()), r.SessionProvider, r.SessionAccount, strconv.FormatBool(r.SessionOfficialLogin), r.CallerKeyID, r.CallerKeyName, r.ResponseID, r.Upstream,
 			n(r.CacheWrite - min(r.CacheWrite1h, r.CacheWrite)), n(min(r.CacheWrite1h, r.CacheWrite)), tries, strconv.FormatBool(r.HandedOn),
-			r.TierAsked, r.TierSent, r.TierServed, r.Stop, credits})
+			r.TierAsked, r.TierSent, r.TierServed, r.Stop, credits, r.Wire})
 	}
 	cw.Flush()
 	return cw.Error()
@@ -1106,6 +1134,15 @@ func (r Row) Floor() (tokens int, ms int64) {
 // (inaction on Discord), and the gateway key that made them ("callerKey"),
 // so the clients a shared gateway serves can be compared (#2521).
 var Dimensions = []string{"provider", "agent", "model", "modelAt", "callerKey"}
+
+// modelAtDim is "modelAt"'s place in Dimensions.
+const modelAtDim = 3
+
+func init() {
+	if Dimensions[modelAtDim] != "modelAt" {
+		panic("usage: modelAtDim is not modelAt's place in Dimensions")
+	}
+}
 
 // NoCallerKey is the "callerKey" of a call that carried no gateway key: one
 // that wasn't counted against any, as this computer's own agents' are, or

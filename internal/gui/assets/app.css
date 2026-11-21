@@ -65,8 +65,13 @@
     --line-2: #2c2c32;
     --fg: #ededf1;
     --fg-2: #b9b9c1;
-    --muted: #8b8b94;
-    --faint: #56565f;
+    /* the quiet text, a help line or a caption: 4.5:1 or better on every
+       dark ground it sits on (the page, a card, an editor, a menu), and on
+       the page over a mid-grey background image under appearance.go's
+       veil; --faint a step under --muted (CHENGJIAHEGOXIS on X: Library ›
+       MCP's project help was #56565f, 2.39:1) */
+    --muted: #9c9ca6;
+    --faint: #90909a;
     --ctl-fg: #a1a1aa;
     --accent: #a5b4fc;
     --accent-soft: #2b2c47;
@@ -90,7 +95,7 @@
 :root[data-theme="dark"] {
   --bg: #1a1a1e; --card: #232327; --card-2: #1f1f23; --pill: #2d2d33; --pill-hover: #36363d;
   --seg-track: rgba(255, 255, 255, .035); --seg-thumb: rgba(255, 255, 255, .15); --seg-edge: inset 0 .5px 0 rgba(255, 255, 255, .08), 0 1px 2px rgba(0, 0, 0, .3);
-  --line: #333339; --line-2: #2c2c32; --fg: #ededf1; --fg-2: #b9b9c1; --muted: #8b8b94; --faint: #56565f; --ctl-fg: #a1a1aa;
+  --line: #333339; --line-2: #2c2c32; --fg: #ededf1; --fg-2: #b9b9c1; --muted: #9c9ca6; --faint: #90909a; --ctl-fg: #a1a1aa;
   --accent: #a5b4fc; --accent-soft: #2b2c47; --accent-fg: #14142a; --sel: #33345a;
   --green: #6fd99b; --green-soft: #1e3a2b; --red: #f28b82; --red-soft: #45272a; --amber: #f2b544; --amber-soft: #3f3220;
   --drift: #ff9592; --drift-soft: #3b1219;
@@ -137,6 +142,10 @@ html.magpie-out-of-sight,
 html.magpie-out-of-sight *,
 html.magpie-out-of-sight *::before,
 html.magpie-out-of-sight *::after { animation-play-state: paused !important; }
+/* but a view's entrance plays: held, a view shown then stays transparent
+   at its first frame until the page hears it is back, and a window shown
+   without that word was a blank pane (WaiooT on X) */
+html.magpie-out-of-sight .view { animation-play-state: running !important; }
 /* out of sight a while: nothing is drawn, so WebKit lets go of every
    layer's buffers, which it keeps for a hidden window (#5530) */
 html.magpie-asleep body { content-visibility: hidden; }
@@ -159,7 +168,7 @@ body {
    specificity, so a view's own rule (a list being sorted, a blurred value)
    still decides; a field typed into stays a field. An account's or a key's
    name is text, though a click renames it (`.acc .rename`). */
-:where(p, pre, code, kbd, samp, dd, td, .hint, .note, .why, .err, .error, [class*="-err "], [class$="-err"], [class*="-error"], .empty-state, .sess-talk, .rt-log, .rt-steps, .rt-time) { user-select: text; -webkit-user-select: text; }
+:where(p, pre, code, kbd, samp, dd, td, .hint, .note, .why, .err, .error, [class*="-err "], [class$="-err"], [class*="-error"], .bad, .warn, .warnbox, [class*="-warn"], [class*="-bad"], [class*="-fail"], .res, .bal-res, .empty-state, .sess-talk, .rt-log, .rt-steps, .rt-time) { user-select: text; -webkit-user-select: text; }
 :where(button, label, summary, select, nav, menu, [role="tab"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"], [draggable="true"], .pop, .seg, .opt, .grip),
 :where(button, label, summary, select, nav, menu, [role="tab"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"], [draggable="true"], .pop, .seg, .opt, .grip) * { user-select: none; -webkit-user-select: none; }
 :where(input, textarea, [contenteditable="true"], [contenteditable=""]) { user-select: text; -webkit-user-select: text; }
@@ -175,9 +184,9 @@ body.linux.panel { --panel-tint: var(--bg); }
 .tint-probe { display: none; background: var(--panel-tint); }
 /* on the frosted panel the surfaces are tints of the backdrop, not flat paint */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #7c7c87; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+  :root:not([data-theme="light"]) body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #90909a; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
 }
-:root[data-theme="dark"] body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #7c7c87; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+:root[data-theme="dark"] body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #90909a; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) body.panel { --bg: #f2f2f5; --card: #ffffff; --card-2: #f8f8fa; --line: rgba(0, 0, 0, .07); --line-2: rgba(0, 0, 0, .06); --pill: #ffffff; --pill-hover: #f4f4f7; --skel: #eeeef2; --skel-hi: #e2e2e8; --pill-line: rgba(0, 0, 0, .12); --pill-shadow: 0 1px 1px rgba(0, 0, 0, .06); --faint: #9a9aa3; --card-edge: 0 0 0 1px rgba(0, 0, 0, .05), 0 1px 2px rgba(0, 0, 0, .04); }
 }
@@ -357,6 +366,7 @@ body.panel .seg { display: none; }
    they don't fit there, in the row rather than over it: halfway between what
    is either side of them, not a third of the room their left and two thirds
    their right (#442) */
+.top.spare #find { display: none; }
 .top.tight .brand > span:not(.logo), .top.tight .update span { display: none; }
 .top.tight .update { width: 22px; padding: 0; justify-content: center; margin-right: 4px; }
 .top.tight .update-hide { right: -5px; }
@@ -843,7 +853,9 @@ body.panel #agents > .row .ag-handle::before { left: -8px; }
 .ag-open .field.ag-who .ok { order: 2; }
 .ag-who .ok { display: none; flex: none; align-items: center; gap: 3px; color: var(--green); font-weight: 600; }
 .ag-who.done .ok { display: inline-flex; }
+/* busy: app.js glyphBusy has put the spinner's arc in place of the glyph */
 .ag-fix.busy svg > * { transform-box: view-box; transform-origin: 50% 50%; animation: spin .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ag-fix.busy svg > * { animation: none; } }
 /* what has to listen at an address no agent reaches magpie by (#1013): long addresses wrap, and it can be copied */
 .drift-why { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 /* the agent's CLI on its name's line (#202): its version faint, and a quiet
@@ -1805,6 +1817,10 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-hscroll::-webkit-scrollbar-button, .led-hscroll::-webkit-scrollbar-corner { display: none; }
 .reads-note { margin-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .reads-note p { margin: 0; }
+.reads-later { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 9px; padding: 8px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.reads-later[hidden] { display: none; }
+.reads-later p { margin: 0; flex: 1 1 260px; min-width: 0; color: var(--muted); line-height: 1.45; }
+.reads-later-acts { display: flex; gap: 4px; margin-left: auto; }
 .led-none { padding: 18px 16px; color: var(--muted); text-align: center; line-height: 1.5; }
 .led-sk { padding: 11px 14px; }
 .led-sk + .led-sk { border-top: 1px solid var(--line-2); }
@@ -1815,6 +1831,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led tbody tr:hover td { background: var(--card-2, var(--pill)); }
 .led .n { text-align: right; }
 .led .faint { color: var(--faint); }
+/* a dash that says on hover why it has no figure (ohblue on X) */
+.led td.speed.faint[title], .led td.cache-hit.faint[title] { cursor: help; }
 .led .muted { color: var(--muted); }
 .led th, .led .when, .led .model-value { color: var(--fg-2); }
 #ledRoute { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -2658,7 +2676,7 @@ body .foot .status.lift { white-space: normal; overflow-wrap: anywhere; text-ove
 .effort-control input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.08); }
 .effort-control input[type="range"]:active::-webkit-slider-thumb { transform: scale(.94); }
 .effort-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 .5px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .22), 0 0 0 3px var(--accent-soft); }
-.effort-ends { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10.5px; color: var(--muted); opacity: .8; }
+.effort-ends { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
 .pop li.sel { background: var(--sel); }
 .pop li .check { color: var(--accent); display: none; margin-left: auto; flex: none; }
 .pop li.cur .check { display: inline-flex; }
@@ -2672,6 +2690,10 @@ body .foot .status.lift { white-space: normal; overflow-wrap: anywhere; text-ove
 .pop li.reset .ic { opacity: .75; }
 .pop li.custom .v { color: var(--fg); }
 .pop li.custom .n { color: var(--muted); }
+/* a routing group no provider serves now: in its section, greyed, with why */
+.pop li.unserved { cursor: default; }
+.pop li.unserved .v, .pop li.unserved .ic { opacity: .5; }
+.pop li.unserved.sel { background: transparent; }
 /* the models on the agent's own account through magpie, folded into one
    row (#496): a chevron says it opens, turned down while open */
 .pop li.fold .v { color: var(--muted); }
@@ -3363,16 +3385,16 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 #gatewayKeys .amodels.key-models { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
 /* a key's quotas and concurrency badges (#2216) take no room until the
    row is hovered, and give way before the row runs past a narrow window */
-#gatewayKeys .amodels:is(.key-quotas, .key-conc, .key-tier, .key-redact) { display: inline-block; flex: 0 1 auto; min-width: 0; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
+#gatewayKeys .amodels:is(.key-quotas, .key-conc, .key-tier, .key-routing, .key-redact) { display: inline-block; flex: 0 1 auto; min-width: 0; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
 /* unset, shown by a hover, they give way before the masked key does: the
    key squeezed by them on a narrow window slid its copy button under the
    pointer that came to drag the row */
-#gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { flex-shrink: 8; }
+#gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-routing, .key-redact):not(.set) { flex-shrink: 8; }
 /* On a narrow window they keep that room when not hovered, only faded
    out: four of them (key-redact made four) took ~90px on hover, the key
    gave it up and its copy button slid under the pointer that came to
    drag the row, so the drag never started (#6268) */
-@media (min-width: 521px) { #gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; } }
+@media (min-width: 521px) { #gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-routing, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; } }
 /* the MCP servers a key held to some may use: cut, and gives way first */
 #gatewayKeys .amodels.key-mcp { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* a read-only key's tag, always shown, never a button */
@@ -3625,14 +3647,15 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .sheet .kind { display: flex; align-items: baseline; gap: 8px; padding: 22px 8px 6px; font-size: 12px; }
 .sheet .kind b { font-size: 13px; font-weight: 600; color: var(--fg); }
 .sheet .kind span { color: var(--faint); }
-/* Partners' heading row: the heading, and at its end the way to join them */
+/* Partners' heading row, in the add sheet and on Discover (plugins.js):
+   the heading, and at its end the way to join them */
 .sheet .kind-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: 12px; }
-.sheet .sponsor-me { display: inline-flex; align-items: center; gap: 5px; height: 22px; margin: 0 8px 0 auto; padding: 0 9px 0 8px; border: 1px solid var(--line); border-radius: 11px; background: var(--card); color: var(--fg-2); font: inherit; font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer; transition: color .15s ease, border-color .15s ease, transform .12s cubic-bezier(.23, 1, .32, 1); }
-.sheet .sponsor-me svg { flex: none; color: var(--accent); }
-.sheet .sponsor-me:active { transform: scale(.97); }
-.sheet .sponsor-me:focus-visible { outline: none; border-color: var(--accent); color: var(--fg); }
+.sheet .sponsor-me, .pm-partners .sponsor-me { display: inline-flex; align-items: center; gap: 5px; height: 22px; margin: 0 8px 0 auto; padding: 0 9px 0 8px; border: 1px solid var(--line); border-radius: 11px; background: var(--card); color: var(--fg-2); font: inherit; font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer; transition: color .15s ease, border-color .15s ease, transform .12s cubic-bezier(.23, 1, .32, 1); }
+.sheet .sponsor-me svg, .pm-partners .sponsor-me svg { flex: none; color: var(--accent); }
+.sheet .sponsor-me:active, .pm-partners .sponsor-me:active { transform: scale(.97); }
+.sheet .sponsor-me:focus-visible, .pm-partners .sponsor-me:focus-visible { outline: none; border-color: var(--accent); color: var(--fg); }
 @media (hover: hover) and (pointer: fine) {
-  .sheet .sponsor-me:hover { color: var(--fg); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .sheet .sponsor-me:hover, .pm-partners .sponsor-me:hover { color: var(--fg); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 }
 /* Partners' light (shinePartners): a hairline runs once round the heading
    and, together, round the partners' tiles below it, each over a breath of
@@ -3678,6 +3701,12 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .tile .nm { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .tile .n { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .nm .badge { flex: none; }
+/* a partner's row carries its tagline on a second, quieter line */
+.tile.two { height: 46px; }
+.tile.two .ic { width: 22px; height: 22px; }
+.tile .col { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tile .sub { min-width: 0; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet .grid:has(> .tile.two) { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 12px; }
 .tile .have { flex: none; width: 6px; height: 6px; border-radius: 3px; background: var(--green); }
 .tile .cnt { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sheet .row-head .custom { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
@@ -4080,6 +4109,7 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
   transition: background .12s, color .12s, border-color .12s;
 }
 .mchip:hover { color: var(--fg); border-color: var(--muted); }
+.mchips.still .mchip:hover { color: var(--muted); border-color: var(--line); }
 .mchip.on { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); font-weight: 500; }
 .mchip.on::before { content: "✓"; font-size: 10px; }
 /* a chip a click picks and unpicks keeps its size either way (frankdeng on
@@ -4243,12 +4273,28 @@ body:not(.side-nav) #view-settings .set-head.stuck::before { opacity: 1; box-sha
 .set-searching .set-miss { display: none !important; }
 .set-searching .set-page::before { content: attr(data-part); display: block; margin: 4px 2px 6px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
 .set-none { margin: 18px 2px; font-size: 13px; color: var(--muted); text-align: center; }
+/* what the words are about, found when nothing has them (finder.js): a line over the parts */
+.set-none.set-near { margin: 2px 2px 10px; text-align: start; }
 .set-page > .list:not(:last-child) { margin-bottom: 8px; }
+/* what the search finds on the other pages (finder.js): a part per page
+   after Settings' own, named by it; the place Open goes to is lit there */
+.set-else { display: contents; }
+.set-else[hidden] { display: none; }
+.find-more { margin: 0 2px; }
+body.web .row.pref.find-row { flex-wrap: nowrap; }
+body.web .row.pref.find-row > .who { flex-basis: auto; min-width: 0; }
+.find-lit { animation: flash 1.2s ease-out; border-radius: 6px; }
+/* the tray panel has Settings' button; the window's header finds */
+body.panel #find { display: none; }
 /* Plugins › Built-in: what the list is over its rows, and a row in use
    saying what uses it under its switch, which can't be turned off */
 .feat-say { margin: 2px 4px 10px; font-size: 12px; line-height: 1.45; color: var(--muted); }
 .set-searching .feat-say { display: none; }
 .row.pref .sub.feat-why { color: var(--muted); font-size: 11px; }
+/* a link that starts its line sits flush with the name and the words above
+   it, its padding out to the left; one after a word or a warning keeps it
+   (every word a line starts with is an element: plugins/search/settings.js) */
+.feat-go > .link:first-child { margin-left: -4px; }
 /* the local model's row says a download, a device or an error in full */
 #privacyModelRow .val { gap: 8px; }
 #privacyModelRow .sub { white-space: normal; overflow-wrap: anywhere; }
@@ -4950,8 +4996,8 @@ body.panel .modal { padding: 16px 12px; }
   body.web .accts.keys .acc > :is(.amodels, .proto, .alane, .aspend, .abal):not(.set) { margin-left: 0 !important; }
   body.web .accts.keys .acc > .abal.abal-many { flex-shrink: 1 !important; padding-block: 2px !important; }
   body.web .accts.keys .key-acts > .text.quiet { margin-right: 0 !important; }
-  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact) { max-width: none !important; padding: 0 7px !important; margin-left: 0 !important; flex-shrink: 0; }
-  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { box-shadow: inset 0 0 0 1px var(--line) !important; }
+  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-routing, .key-redact) { max-width: none !important; padding: 0 7px !important; margin-left: 0 !important; flex-shrink: 0; }
+  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-routing, .key-redact):not(.set) { box-shadow: inset 0 0 0 1px var(--line) !important; }
 }
 
 /* Import from other apps: a checklist per app */
