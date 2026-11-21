@@ -161,7 +161,7 @@ test("i18n: every string the home page marks has its Chinese, and no other", asy
   }
 });
 
-test("home: / sends a browser that prefers Chinese, Japanese or German to its page, until a language is picked", async () => {
+test("home: / sends a browser that prefers Chinese (Simplified or Traditional), Japanese or German to its page, until a language is picked", async () => {
   const env = { ASSETS: { fetch: async () => new Response("<html></html>", { headers: { "Content-Type": "text/plain" } }) } };
   const home = (headers) => worker.fetch(new Request("https://usemagpie.ai/", { headers }), env, ctx);
   const to = async (headers) => {
@@ -172,7 +172,11 @@ test("home: / sends a browser that prefers Chinese, Japanese or German to its pa
   assert.equal(await to({}), null);
   assert.equal(await to({ "Accept-Language": "en-US,en;q=0.9,zh;q=0.8" }), null);
   assert.equal(await to({ "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" }), "/zh/");
-  assert.equal(await to({ "Accept-Language": "zh-TW" }), "/zh/");
+  for (const tag of ["zh-TW", "zh-tw,zh;q=0.9", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-TW,en;q=0.5"]) assert.equal(await to({ "Accept-Language": tag }), "/zh-tw/", tag);
+  for (const tag of ["zh", "zh-SG", "zh-Hans-CN"]) assert.equal(await to({ "Accept-Language": tag }), "/zh/", tag);
+  assert.equal(await to({ Cookie: "lang=zh-tw" }), "/zh-tw/");
+  assert.equal(await to({ "Accept-Language": "zh-TW", Cookie: "lang=zh" }), "/zh/");
+  assert.equal(await to({ "Accept-Language": "zh-CN", Cookie: "lang=zh-tw" }), "/zh-tw/");
   assert.equal(await to({ "Accept-Language": "fr-FR,zh;q=0.5,en;q=0.4" }), "/zh/");
   assert.equal(await to({ "Accept-Language": "en;q=0.2,zh;q=0.8" }), "/zh/");
   assert.equal(await to({ "Accept-Language": "zh-CN", Cookie: "a=b; lang=en" }), null);
@@ -184,10 +188,10 @@ test("home: / sends a browser that prefers Chinese, Japanese or German to its pa
   assert.equal(await to({ "Accept-Language": "de-AT" }), "/de/");
   assert.equal(await to({ "Accept-Language": "de", Cookie: "lang=en" }), null);
   assert.equal(await to({ Cookie: "lang=de" }), "/de/");
-  for (const lang of ["zh", "de"]) {
-    const res = await worker.fetch(new Request("https://usemagpie.ai/" + lang), env, ctx);
-    assert.equal(res.status, 301);
-    assert.equal(new URL(res.headers.get("Location")).pathname, `/${lang}/`);
+  for (const [from, lang] of [["zh", "zh"], ["de", "de"], ["zh-tw", "zh-tw"], ["zh-TW/", "zh-tw"], ["zh-TW", "zh-tw"]]) {
+    const res = await worker.fetch(new Request("https://usemagpie.ai/" + from), env, ctx);
+    assert.equal(res.status, 301, from);
+    assert.equal(new URL(res.headers.get("Location")).pathname, `/${lang}/`, from);
   }
 });
 
@@ -385,6 +389,8 @@ test("docs: an English docs page sends a browser that prefers Chinese or Japanes
   assert.equal(await to("/docs/start", {}), 200);
   assert.equal(await to("/docs/start", { "Accept-Language": "en-US,en;q=0.9,zh;q=0.8" }), 200);
   assert.equal(await to("/docs/start", { "Accept-Language": "zh-CN,zh;q=0.9" }), "/docs/zh/start");
+  assert.equal(await to("/docs/start", { "Accept-Language": "zh-TW" }), "/docs/zh/start");
+  assert.equal(await to("/docs/start", { Cookie: "lang=zh-tw" }), "/docs/zh/start");
   assert.equal(await to("/docs/start?omarchy=1", { "Accept-Language": "ja-JP" }), "/docs/ja/start?omarchy=1");
   assert.equal(await to("/docs/start", { "Accept-Language": "zh-CN", Cookie: "lang=en" }), 200);
   assert.equal(await to("/docs/start", { Cookie: "lang=ja" }), "/docs/ja/start");
@@ -407,14 +413,21 @@ test("partners", async () => {
   assert.equal(res.headers.get("Cache-Control"), "public, max-age=600");
   const { partners } = await res.json();
   assert.deepEqual(partners, served(PARTNERS, Date.now()));
-  assert(partners.length <= 12);
+  // each kind, the add sheet's and the Plugins page's, at most 12
+  assert(partners.filter((p) => !p.plugin).length <= 12);
+  assert(partners.filter((p) => p.plugin).length <= 12);
   const ids = new Set();
   for (const p of PARTNERS) {
     assert.match(p.id, /^[a-z0-9][a-z0-9-]{1,40}$/, p.id);
     assert(!ids.has(p.id), p.id + " twice");
     ids.add(p.id);
     assert(p.name?.trim(), p.id + " has no name");
-    assert(p.chat || p.responses || p.anthropic || p.regions?.length, p.id + " has no endpoint");
+    if (p.plugin) {
+      // a plugin's partner: an npm package's name and no endpoint
+      assert.match(p.plugin, /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/, p.id + ": " + p.plugin);
+      assert(p.plugin.length <= 214, p.id);
+      assert(!p.chat && !p.responses && !p.anthropic && !p.regions, p.id + " is a plugin's partner with an endpoint");
+    } else assert(p.chat || p.responses || p.anthropic || p.regions?.length, p.id + " has no endpoint");
     const urls = [p.chat, p.responses, p.anthropic, p.website, p.keysUrl, p.iconUrl, ...(p.regions || []).flatMap((r) => [r.chat, r.responses, r.anthropic, r.keysUrl, r.website])];
     for (const u of urls.filter(Boolean)) assert.equal(new URL(u).protocol, "https:", p.id + ": " + u);
     for (const t of [p.from, p.until].filter(Boolean)) assert(!isNaN(Date.parse(t)), p.id + ": " + t);
@@ -451,6 +464,18 @@ test("partners: links go through /go", () => {
   // partners.js itself is left as it is
   assert.equal(LIST[0].keysUrl, "https://acme.example/keys");
   assert.equal(served([{ ...LIST[0], until: "2026-10-10T00:00:01Z" }], NOW).length, 1);
+});
+
+// a plugin's partner is served as the rest: its website a /go link that
+// counts the click, its package as it is
+test("partners: a plugin's partner", () => {
+  const notes = { id: "notes", name: "Notes", plugin: "@notes/magpie-sync", website: "https://notes.example/?aff=1", iconUrl: "https://notes.example/i.png", notes: { en: "Notes" } };
+  const [p] = served([notes], NOW);
+  assert.equal(p.plugin, "@notes/magpie-sync");
+  assert.equal(p.website, "https://usemagpie.ai/go/notes/site");
+  assert.equal(p.siteHost, "notes.example");
+  assert.equal(goTarget([notes], "notes", "site"), "https://notes.example/?aff=1&ref=magpie");
+  assert.equal(goTarget([notes], "notes", "keys"), "");
 });
 
 test("partners: /go sends the browser on, saying it came from magpie", () => {

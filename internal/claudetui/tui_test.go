@@ -3,6 +3,7 @@ package claudetui
 import (
 	"bufio"
 	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -44,17 +45,33 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeTrust asks whether to trust the folder as Claude Code 2.1.314 does:
-// its words placed by cursor moves, "No, exit" chosen, and drawn again on
-// No once it listens, the keys before that lost. Enter on No exits.
-// With always, it never listens, as a question whose answer never goes
-// through.
+// trustScreen is how Claude Code 2.1.329 first draws its trust question,
+// as a real run drew it in a sandbox (its folder /private/tmp/
+// magpie-trust-fixture): headed "Quick safety check", the No row first,
+// and "trust this folder" in the Yes row alone.
+//
+//go:embed testdata/trust-2.1.329.bin
+var trustScreen []byte
+
+// fakeTrust asks whether to trust the folder as Claude Code 2.1.329 does
+// (trustScreen): "No, exit" chosen, the keys before it listens lost, and
+// nothing drawn again until a key moves the choice, when its two rows
+// are, as 2.1.329 draws them. Enter on No exits. With always, it never listens, as a
+// question whose answer never goes through.
 func fakeTrust(r *bufio.Reader, always bool) {
 	var mu sync.Mutex
 	yes, deaf := false, true
+	first := true
 	draw := func() {
-		marks := map[bool]string{true: "\x1b[38;2;177;185;249m❯\x1b[39m", false: " "}
-		fmt.Printf("\x1b[2GDo\x1b[5Gyou\x1b[9Gtrust\x1b[15Gthis\x1b[20Gfolder?\r\n\x1b[2G%s\x1b[4GNo,\x1b[8Gexit\r\n\x1b[2G%s\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\r\n", marks[!yes], marks[yes])
+		if first {
+			first = false
+			_, _ = os.Stdout.Write(trustScreen)
+			return
+		}
+		// 2.1.329's own redraw on a key (its cursor left on the No row
+		// it started from)
+		marks := map[bool]string{true: "\x1b[38;2;177;185;249m❯", false: " "}
+		fmt.Printf("\x1b[?2026h\x1b[1D\x1b[4B\r\x1b[1C\x1b[4A%s\x1b[4GNo, exit\x1b[39m\r\x1b[1C\x1b[1B%s\x1b[4GYes, I trust this folder\x1b[39m\r\r\n\r\n\r\n\x1b[1C\x1b[4A\x1b[?2026l", marks[!yes], marks[yes])
 	}
 	draw()
 	time.AfterFunc(150*time.Millisecond, func() {
@@ -64,7 +81,6 @@ func fakeTrust(r *bufio.Reader, always bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		deaf, yes = false, false
-		draw()
 	})
 	for {
 		c, err := r.ReadByte()
@@ -346,6 +362,15 @@ func fakeClaude(args []string) {
 		time.AfterFunc(d, func() { _ = os.WriteFile(listed, nil, 0o600) })
 	}
 	streams := 0
+	// FAKE_HISTORY: a resumed conversation's history is drawn above the
+	// prompt, and it talks of the dialogs
+	if os.Getenv("FAKE_HISTORY") != "" {
+		fmt.Print("\r\n> Why does it say asked to accept running in Bypass\x1b[1CPermissions\x1b[1Cmode?\r\n" +
+			"  ❯ No, exit\r\n  ❯ Yes, I accept\r\n  Do you trust this folder? Yes, I trust this folder\r\n" +
+			"  Choose the text style that looks best; Select login method; Press Enter to continue;\r\n" +
+			"  Enter to confirm · Esc to skip, keep browser tools off\r\n" +
+			strings.Repeat("  and more history of that conversation, long past the dialogs' words\r\n", 40))
+	}
 	fmt.Print("\r\n❯ ")
 	// the prompt's words, and the prompt as drawn, again as a paste
 	// starts and as one is taken in. As Claude Code 2.1.318 does, it draws
@@ -1162,6 +1187,31 @@ func TestShimDeclinesChromeOffer(t *testing.T) {
 	}
 }
 
+// Claude Code 2.1.329's trust question, as a real run drew it, is the
+// question, read from what was drawn and from the screen alike, with "No,
+// exit" chosen: its heading is "Quick safety check", and "trust this
+// folder" is in its Yes row alone, under the No row. Read as a question
+// with its words above both rows, it was none, and a run told to trust
+// the folder waited out readyWait on it, 502 on every account
+// (@ahz2ygnhjmIJ0E0 on X).
+func TestTrustQuestionOf2_1_329(t *testing.T) {
+	s := &shim{screen: trustScreen, grid: newGrid(screenSize())}
+	s.grid.write(trustScreen)
+	now, _ := s.looks()
+	for name, p := range map[string]string{"drawn": s.plain(), "screen": now} {
+		words := strings.Join(strings.Fields(p), " ")
+		if !optionDialog(words, trustAsk, trustRow) {
+			t.Errorf("%s: not the trust question: %q", name, words)
+		}
+		if optionDialog(words, bypassAsk, bypassRow) {
+			t.Errorf("%s: read as the Bypass Permissions disclaimer", name)
+		}
+	}
+	if p := s.plain(); lastAt(trustNo, p) < 0 || lastAt(trustYes, p) >= 0 {
+		t.Errorf("No isn't the choice drawn: %q", p)
+	}
+}
+
 func TestShimTrustsWhenTold(t *testing.T) {
 	out := runShim(t, []string{"FAKE_TRUST=1", TrustEnv + "=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
 	if out[0]["subtype"] != "init" || out[1]["type"] != "assistant" {
@@ -1177,6 +1227,17 @@ func TestShimTrustsWhenTold(t *testing.T) {
 // that folder's settings.json and the next run is shown none of it.
 func TestShimAcceptsBypassDisclaimer(t *testing.T) {
 	out := runShim(t, []string{"FAKE_BYPASS=1", BypassEnv + "=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
+	if out[0]["subtype"] != "init" || out[1]["type"] != "assistant" {
+		t.Fatalf("got %v, want an interactive turn", out)
+	}
+}
+
+// A resumed conversation whose history holds the dialogs' words and
+// option rows is not a dialog: the prompt box is showing, and the run
+// goes on, with no BypassEnv or TrustEnv to answer one (@alisenray on X:
+// every --resume failed at 45s, "not answered", no dialog on screen).
+func TestShimIgnoresDialogWordsInHistory(t *testing.T) {
+	out := runShim(t, []string{"FAKE_HISTORY=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
 	if out[0]["subtype"] != "init" || out[1]["type"] != "assistant" {
 		t.Fatalf("got %v, want an interactive turn", out)
 	}

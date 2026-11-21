@@ -36,7 +36,16 @@ magpie.plugin("sessions", (ctx) => {
   let elseCtl = null;
   let elseT = 0;
   const ELSE_MORE = 20;
-  const SEARCH_WAIT = 300;
+  // what was said is read a moment after the filter's words count: they
+  // count once typing pauses (TYPE_WAIT), at Enter, and never while an
+  // input method is still composing them (suetfungsit on X: each keystroke
+  // filtered and redrew a long history's list, and a Chinese input method's
+  // pinyin was searched before its characters were picked); typed is the
+  // words in the field that don't count yet
+  const SEARCH_WAIT = 100;
+  const TYPE_WAIT = 200;
+  let typed = null;
+  let typeT = 0;
   const needleOf = (q) => q.trim().split(/\s+/).filter(Boolean).join(" ").toLowerCase();
   let trashOn = false;
   // Picking sessions to delete is a mode of its own, as in Finder and Mail:
@@ -223,6 +232,8 @@ magpie.plugin("sessions", (ctx) => {
     }
     trashOn = false;
     if (s.id) {
+      clearTimeout(typeT);
+      typed = null;
       query = "";
       searchSoon();
       detail = s.id;
@@ -256,9 +267,21 @@ magpie.plugin("sessions", (ctx) => {
     return q ? list.filter((s) => hitOf(s) || [s.title, s.cwd, s.id, ...(s.models || []).map((m) => m.model)].some((x) => (x || "").toLowerCase().includes(q))) : list;
   };
 
-  // searchSoon searches what was said for the filter's words, once typing
-  // pauses; fewer than two letters search nothing
-  function searchSoon() {
+  // filterBy makes v the filter's words; now (Enter, Escape) searches what
+  // was said at once
+  function filterBy(v, now) {
+    clearTimeout(typeT);
+    typed = null;
+    if (v === query && !now) return;
+    query = v;
+    drawnIn.clear();
+    searchSoon(now);
+    redrawList();
+  }
+
+  // searchSoon searches what was said for the filter's words, a moment on
+  // or now; fewer than two letters search nothing
+  function searchSoon(now) {
     clearTimeout(searchT);
     const needle = needleOf(query);
     if (!data?.agent || [...needle].length < 2) {
@@ -268,7 +291,7 @@ magpie.plugin("sessions", (ctx) => {
       elseSoon("");
       return;
     }
-    elseSoon(needle);
+    elseSoon(needle, 0, now);
     if (found && found.agent === data.agent && found.needle === needle && !found.busy && !found.error) return;
     searchCtl?.abort();
     searchCtl = null;
@@ -285,13 +308,13 @@ magpie.plugin("sessions", (ctx) => {
       }
       if (searchCtl === ctl) searchCtl = null;
       if (view === "sessions" && !trashOn) { drawnIn.clear(); redrawList(); }
-    }, SEARCH_WAIT);
+    }, now ? 0 : SEARCH_WAIT);
   }
 
   // elseSoon searches every agent's sessions for needle (none in gateway
   // mode, where no agent's files here are read), once typing pauses, and
   // again a few seconds on while magpie's index has sessions to read yet
-  function elseSoon(needle, again = 0) {
+  function elseSoon(needle, again = 0, now) {
     clearTimeout(elseT);
     if (!needle || data?.reads?.gateway) {
       elseCtl?.abort();
@@ -319,7 +342,7 @@ magpie.plugin("sessions", (ctx) => {
       }
       if (elseCtl === ctl) elseCtl = null;
       if (view === "sessions" && !trashOn) redrawList();
-    }, again ? 0 : SEARCH_WAIT);
+    }, again || now ? 0 : SEARCH_WAIT);
   }
   // the hits elsewhere shown with the agent shown: those of other agents
   const elseHits = () => elsewhere && elsewhere.needle === needleOf(query) && data ? elsewhere.hits.filter((h) => h.agent !== data.agent).slice(0, ELSE_MORE) : [];
@@ -580,6 +603,54 @@ magpie.plugin("sessions", (ctx) => {
     return card;
   }
 
+  // An agent found after the user chose which agents' sessions to read
+  // (baysonfox on X: Antigravity 2.0, installed after allow selected,
+  // showed only what came through the gateway): a choice that names its
+  // agents reads no other, so the page asks about each such agent once
+  // (reads.found[].new). Allow names it on, Keep off names it off; either
+  // way it isn't asked about again, and Settings › Privacy changes it.
+  const laterFound = () => data?.reads?.asked && !data.reads.gateway ? (data.reads.found || []).filter((x) => x.new) : [];
+  let laterBusy = false;
+
+  function laterCard(found) {
+    const card = el("div", "sm-consent sm-later");
+    const title = el("b", "sm-consent-title", t("Show these agents' sessions too?"));
+    title.id = "smLaterTitle";
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-labelledby", title.id);
+    card.append(title);
+    const list = el("div", "list sm-consent-list");
+    for (const x of found) {
+      const row = el("div", "row sm-consent-row");
+      row.append(icon(x.icon), el("span", "sm-consent-name", x.name));
+      list.append(row);
+    }
+    card.append(list);
+    const acts = el("div", "sm-consent-acts");
+    const save = async (on) => {
+      laterBusy = true;
+      draw();
+      const agents = {};
+      for (const x of found) agents[x.agent] = on;
+      try {
+        await api("sessions/reads", { agents });
+        await load();
+      } catch (err) { status(err.message, "err"); }
+      finally { laterBusy = false; draw(); }
+    };
+    const off = el("button", "text sm-later-off", t("Keep off"));
+    off.type = "button";
+    off.disabled = laterBusy;
+    off.onclick = () => save(false);
+    const on = el("button", "text primary sm-later-on", t("Show their sessions"));
+    on.type = "button";
+    on.disabled = laterBusy;
+    on.onclick = () => save(true);
+    acts.append(off, on);
+    card.append(acts);
+    return card;
+  }
+
   function head() {
     const h = el("div", "usage-head sm-head");
     const wrap = el("div", "sm-switch");
@@ -621,10 +692,18 @@ magpie.plugin("sessions", (ctx) => {
     q.spellcheck = false;
     q.autocomplete = "off";
     q.placeholder = t("Search sessions");
-    q.value = query;
+    q.value = typed ?? query;
     q.hidden = trashOn;
-    q.oninput = () => { query = q.value; drawnIn.clear(); searchSoon(); redrawList(); };
-    q.onkeydown = (e) => { if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = ""; query = ""; drawnIn.clear(); searchSoon(); redrawList(); } };
+    let composing = false;
+    const later = () => { typed = q.value; clearTimeout(typeT); typeT = setTimeout(() => filterBy(q.value), TYPE_WAIT); };
+    q.oninput = (e) => { if (e.isComposing || composing) { typed = q.value; clearTimeout(typeT); } else later(); };
+    q.addEventListener("compositionstart", () => { composing = true; clearTimeout(typeT); });
+    q.addEventListener("compositionend", () => { composing = false; later(); });
+    q.onkeydown = (e) => {
+      if (e.isComposing || e.keyCode === 229) return; // the input method's own Enter or Escape
+      if (e.key === "Enter") filterBy(q.value, true);
+      else if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = ""; filterBy("", true); }
+    };
     const sel = el("button", "text sm-select" + (selecting ? " on" : ""), t(selecting ? "Done" : "Select"));
     sel.type = "button";
     sel.setAttribute("aria-pressed", String(selecting));
@@ -672,6 +751,7 @@ magpie.plugin("sessions", (ctx) => {
     }
     if (trashOn) { box.append(...trash()); return box; }
     if (consentApplies()) box.append(consentCard());
+    else if (laterFound().length) box.append(laterCard(laterFound()));
     if (recordingApplies()) box.append(recordingCard());
     if (!data.agents.length) {
       if (consentApplies()) return box;
