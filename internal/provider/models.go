@@ -102,7 +102,9 @@ func (p Provider) available() []catalog.Model {
 		// a model the provider's catalog doesn't list reads as it does
 		// under the other providers serving it (GLM-5-Turbo, not
 		// glm-5-turbo, beside ZCode's)
-		return catalog.Named(catalog.Decorate(live, known))
+		// a relay's ids of one model at each effort as that model, with
+		// those efforts (effort_variants.go)
+		return catalog.Named(p.foldEffortVariants(catalog.Decorate(live, known)))
 	}
 	if p.IsAzure() {
 		// an Azure resource serves its deployments alone, named as the
@@ -221,6 +223,11 @@ func (p Provider) liveByID(model string) []catalog.Model {
 	own := p.OwnModelID(model)
 	ms := catalog.LiveByIDShared(p.ID, own)
 	if own == model {
+		if len(ms) == 0 && p.foldsEfforts() {
+			// a relay's effort family, whose own id it may not list:
+			// its default member's (effort_variants.go)
+			return p.liveFamily(model)
+		}
 		return ms
 	}
 	out := slices.Clone(ms)
@@ -404,8 +411,14 @@ func liveIDs(id string) map[string]bool {
 	for _, m := range ms {
 		out[m.ID] = true
 	}
-	// picks are of the ids the user lists them by (SetModelID)
-	return modelIDsOf(id).ids(out)
+	// picks are of the ids the user lists them by (SetModelID), and of a
+	// relay's effort families (effort_variants.go)
+	out = modelIDsOf(id).ids(out)
+	all := sharedAll()
+	if i := slices.IndexFunc(all, func(p Provider) bool { return p.ID == id }); i >= 0 {
+		out = all[i].withFamilyIDs(out)
+	}
+	return out
 }
 
 // dropGonePicks takes out of the saved provider's picks those before had
@@ -859,6 +872,7 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 		return fetched{ms, base, nil, nil}, nil
 	}
 	var errs []string
+	var refused *catalog.ListError // the first list the vendor answered with an error status
 	var out []catalog.Model
 	byID := map[string]int{}
 	add := func(m catalog.Model) {
@@ -969,6 +983,9 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 			if !slices.Contains(errs, err.Error()) {
 				errs = append(errs, err.Error())
 			}
+			if le := (*catalog.ListError)(nil); errors.As(err, &le) && refused == nil {
+				refused = le
+			}
 			dead = append(dead, protoBase)
 			continue
 		}
@@ -1005,7 +1022,7 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 		}
 		// the endpoints are kept as they were: a vendor with no list (or one
 		// that wants what the key can't give) still serves the models typed in
-		return fetched{}, errorf("%s — type its model ids in by hand, or give the URL its list is at", strings.Join(errs, "; "))
+		return fetched{}, catalog.ListsFailed{Msg: fmt.Sprintf("%s — type its model ids in by hand, or give the URL its list is at", strings.Join(errs, "; ")), Status: refused}
 	}
 	if len(dead) > 0 {
 		kept, saved := p.keepDeadSides(dead, sides)
@@ -1330,14 +1347,31 @@ func (p Provider) PlanRerankers() []catalog.Model {
 	return p.planMedia(func(r *Region) []string { return r.Rerankers }, false, false, catalog.ServesRerank)
 }
 
-// PlanRetrieval are the preset's models of kind's (catalog.ServesEmbedding
-// or ServesRerank), or both for "".
+// PlanSpeakers are the text-to-speech models the preset names, served on
+// /v1/audio/speech.
+func (p Provider) PlanSpeakers() []catalog.Model {
+	return p.planMedia(func(r *Region) []string { return r.Speakers }, false, false, catalog.ServesSpeech)
+}
+
+// PlanTranscribers are the speech-to-text models the preset names, served
+// on /v1/audio/transcriptions.
+func (p Provider) PlanTranscribers() []catalog.Model {
+	return p.planMedia(func(r *Region) []string { return r.Transcribers }, false, false, catalog.ServesTranscription)
+}
+
+// PlanRetrieval are the preset's models of kind's (catalog.ServesEmbedding,
+// ServesRerank, ServesSpeech or ServesTranscription), or its embedding and
+// rerank models for "".
 func (p Provider) PlanRetrieval(kind string) []catalog.Model {
 	switch kind {
 	case catalog.ServesEmbedding:
 		return p.PlanEmbeddings()
 	case catalog.ServesRerank:
 		return p.PlanRerankers()
+	case catalog.ServesSpeech:
+		return p.PlanSpeakers()
+	case catalog.ServesTranscription:
+		return p.PlanTranscribers()
 	case "":
 		return append(p.PlanEmbeddings(), p.PlanRerankers()...)
 	}
@@ -1362,7 +1396,8 @@ func (p Provider) planMedia(ids func(*Region) []string, draws, films bool, serve
 		return nil
 	}
 	// a preset with no regions names its own (Voyage AI's)
-	own := &Region{Embeddings: pr.Embeddings, Rerankers: pr.Rerankers}
+	own := &Region{Embeddings: pr.Embeddings, Rerankers: pr.Rerankers, Drawers: pr.Drawers, Videos: pr.Videos,
+		Speakers: pr.Speakers, Transcribers: pr.Transcribers}
 	// keys on plans of their own (KeyAccount.Plan): each plan's, once
 	views := []Provider{p}
 	if p.plansMixed() {
@@ -1700,6 +1735,24 @@ func (p Provider) Serving(model string) func(KeyAccount) bool {
 	}
 	// the vendor's lists name the model by its own id (SetModelID)
 	keys, found := x.of[p.OwnModelID(model)]
+	if !found {
+		// a relay's effort family: the keys listed any of its ids
+		// (effort_variants.go)
+		if f, ok := p.family(model); ok {
+			keys = map[string]bool{}
+			for _, id := range f.members() {
+				ks, ok := x.of[id]
+				if ok && len(ks) == 0 {
+					keys = nil // one of them listed to every key
+					break
+				}
+				for k := range ks {
+					keys[k] = true
+				}
+				found = found || ok
+			}
+		}
+	}
 	return func(k KeyAccount) bool {
 		id := keyID(k.Key)
 		return !found || len(keys) == 0 || !x.listed[id] || keys[id]
@@ -2410,8 +2463,23 @@ func (p Provider) listPrice(model string) (catalog.Price, bool, int) {
 	return p.listPriceIn(p.priceCatsOf(), model)
 }
 
-// listPriceIn is listPrice with p's catalogs given.
+// listPriceIn is listPrice with p's catalogs given, Gemini 4 Carbon and
+// Argon at Antigravity's original price on an Antigravity route, and under
+// its own ids anywhere (antigravityOriginal).
 func (p Provider) listPriceIn(c priceCats, model string) (catalog.Price, bool, int) {
+	pr, ok, from := p.listPriceBase(c, model)
+	if ok {
+		if p.servedByAntigravity() {
+			pr = atLeastOriginal(model, pr)
+		} else {
+			pr = agyScoped(model, pr)
+		}
+	}
+	return pr, ok, from
+}
+
+// listPriceBase is listPriceIn before Antigravity's original prices.
+func (p Provider) listPriceBase(c priceCats, model string) (catalog.Price, bool, int) {
 	if own := p.OwnModelID(model); own != model {
 		// a model listed by an id the user gave it is priced as the
 		// provider's own id of it first, then as the id it is listed by
@@ -2797,7 +2865,7 @@ var kimiCodeAPI = map[string]string{
 func MakerPrice(model string) (catalog.Price, bool) {
 	for _, m := range pricedNames(model) {
 		if pr, ok := makerListPrice(m); ok {
-			return pr, true
+			return agyScoped(model, pr), true
 		}
 	}
 	if f, ok := mythosFable(model); ok {
@@ -2980,6 +3048,9 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 			return catalog.Price{}, true
 		}
 		pr, ok := MakerPrice(model)
+		if ok && p.servedByAntigravity() {
+			pr = atLeastOriginal(model, pr)
+		}
 		if ok {
 			if k := p.PeakOf(model); k != "" {
 				pr.Peak = k
@@ -2997,6 +3068,9 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 	pr, ok := p.ListPrice(model)
 	if !ok {
 		pr, ok = MakerPrice(model)
+		if ok && p.servedByAntigravity() {
+			pr = atLeastOriginal(model, pr)
+		}
 	}
 	if !ok {
 		pr, ok = SamePriceIn(s, id, model)
@@ -3006,7 +3080,7 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 		pr.Peak = k
 	}
 	// what the provider bills against it (#819)
-	if ok && p.PriceRate > 0 {
+	if ok && (p.PriceRate > 0 || p.zeroRate) {
 		pr = pr.Times(p.PriceRate)
 	}
 	if ok && p.cacheWritesAlike() {
@@ -3330,13 +3404,17 @@ func geminiTrialBase(l string) (string, bool) {
 // gemini-pro-orchestrator-g1-pro (`agy models` on a Google AI Pro account,
 // agy 1.5.9, in the agy-cli plugin's test/usage.mjs; mu33410 on X: agy's
 // Orchestrator had no cost) and Orchestrator (Carbon)
-// gemini-pro-orchestrator, as the app did before Argon. Only these ids: no
-// other name is read as one of them.
+// gemini-pro-orchestrator, as the app did before Argon. Orchestrator
+// (Neon) plans with Gemini 4 Neon (the same docs page, read 2026-11-19);
+// its id is gemini-pro-orchestrator-neon, beside -argon and -g1-pro in
+// the agy 1.5.10 binary's strings (mu33410 on X: Neon had no cost in agy).
+// Only these ids: no other name is read as one of them.
 var antigravityRoles = map[string]string{
 	"gemini-pro-orchestrator":        "gemini-4-carbon",
 	"gemini-pro-orchestrator-carbon": "gemini-4-carbon",
 	"gemini-pro-orchestrator-argon":  "gemini-4-argon",
 	"gemini-pro-orchestrator-g1-pro": "gemini-4-argon",
+	"gemini-pro-orchestrator-neon":   "gemini-4-neon",
 	"gemini-flash-worker-agy":        "gemini-4-hydrogen",
 }
 

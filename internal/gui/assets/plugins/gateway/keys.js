@@ -234,7 +234,7 @@ function renderGatewayKeys() {
     tick.onclick = () => gatewayKeyAction(k.off ? "on-key" : "off-key", { key: k.id });
     // the copy sits by the key it copies (the owner: stranded among the
     // badges it read as nobody's); Rotate and Remove wait in the row's menu
-    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : k.admin && gatewayKeyCanAdmin(k) ? [gatewayAdminTag(k)] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k), gatewayTierBadge(k), gatewayRedactBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
+    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : k.admin && gatewayKeyCanAdmin(k) ? [gatewayAdminTag(k)] : []), ...(k.memory && gatewayKeyCanAdmin(k) ? [gatewayMemoryTag()] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k), gatewayTierBadge(k), gatewayRoutingBadge(k), gatewayRedactBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
     const under = gatewayLimit?.id === k.id ? [gatewayLimitEditor(k)] : keyUsed(k).map((u) => gatewayLimitLine(k, u));
     if (under.length) row.classList.add("with-limit"), row.append(...under);
     list.append(row);
@@ -350,9 +350,10 @@ function gatewayKeyMore(k) {
       ...(k.browser || k.readOnly ? [] : [{ name: "Model names", icon: MCP_GLYPH, run: () => gatewayAliasesAsk(k) }]),
       ...(k.browser ? [] : [{ name: "Keep accounts out", icon: KEEP_OUT_GLYPH, run: () => gatewayKeptOutPick(k, more) }]),
       { name: "Rotate key", icon: ROTATE_GLYPH, run: () => askGatewayKey(k, true) },
-      // the management API (#6307, ljayic on X), seldom set, so under
-      // Advanced; only a key the user made can hold it (access's adminOf)
-      ...(gatewayKeyCanAdmin(k) ? [{ name: "Advanced", icon: ADVANCED_GLYPH, run: () => gatewayAdminPick(k, more) }] : []),
+      // the management API (#6307, ljayic on X) and Magpie Memory from
+      // other computers (Niapyaya on X), seldom set, so under Advanced;
+      // only a key the user made can hold them (access's adminOf, memoryOf)
+      ...(gatewayKeyCanAdmin(k) ? [{ name: "Advanced", icon: ADVANCED_GLYPH, run: () => gatewayAdvanced(k, more) }] : []),
       { name: "Remove", icon: REMOVE_GLYPH, sep: true, run: () => askGatewayKey(k, false) },
     ]);
   };
@@ -365,6 +366,35 @@ const ADVANCED_GLYPH = "M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6M10 3v3M6 10v
 // an issued or expiring one
 function gatewayKeyCanAdmin(k) {
   return !k.lan && !k.browser && !k.readOnly && !k.issuer && !k.expires;
+}
+// gatewayAdvanced is a key's seldom-set grants, each its own pick
+function gatewayAdvanced(k, anchor) {
+  openRowMenu(anchor, [
+    { name: "Management API", icon: ADVANCED_GLYPH, run: () => gatewayAdminPick(k, anchor) },
+    { name: "Magpie Memory", icon: MEMORY_GLYPH, run: () => gatewayMemoryPick(k, anchor) },
+  ]);
+}
+const MEMORY_GLYPH = "M3 3.5h10v9H3zM5.5 6h5M5.5 8h5M5.5 10h3";
+// gatewayMemoryPick sets whether the key's agents on other computers may
+// read and save Magpie Memory (/mcp/magpie/memory and the hub's
+// magpie-memory, Niapyaya on X). This computer's agents always may.
+function gatewayMemoryPick(k, anchor) {
+  const opts = [
+    { v: "", name: "From this computer" },
+    { v: "any", name: "From any computer" },
+  ];
+  openProtoMenu(anchor, opts, k.memory ? "any" : "", async (v) => {
+    if (v === (k.memory ? "any" : "")) return;
+    const out = await gatewayKeyAction("memory-key", { key: k.id, memory: v === "any" });
+    if (out) status(t(v ? "{name} can read and save Magpie Memory from any computer" : "{name} uses Magpie Memory from this computer only", { name: k.name }), "ok");
+  }, "Magpie Memory", "sess-menu");
+}
+// a key whose agents elsewhere read and save Magpie Memory says so in its
+// row, always: what it saves goes into every agent's instructions here
+function gatewayMemoryTag() {
+  const tag = el("span", "amodels key-readonly key-memory set", t("Memory from any computer"));
+  tag.title = t("This key's agents on other computers can read and save Magpie Memory while magpie is shared");
+  return tag;
 }
 // gatewayAdminPick sets how the key may use the management API
 // (/v1/magpie/admin/): not at all, from this computer, or from any
@@ -1026,6 +1056,42 @@ function gatewayTierBadge(k) {
       const out = await gatewayKeyAction("tier-key", { key: k.id, serviceTier: v });
       if (out) status(t("{who}: service tier {tier}", { who: k.name, tier: t(KEY_TIERS.find((o) => o.v === v).name) }), "ok");
     }, "Service tier", "sess-menu");
+  };
+  return b;
+}
+
+// how a routing group the key asks for routes its requests (justforlxz on
+// X): as the group does, or by a routing of the key's own; a Manual group
+// still sends to its pick. The built-in rotation's routings leave the menu
+// while it is off (ROTATION), one the key has kept.
+const KEY_ROUTINGS = [
+  ["", "As the group routes"], ["smart", "Quota first"], ["order", "In order"], ["drain", "Until used up"],
+  ["rotate", "In turn"], ["usage", "Least used first"], ["pace", "Use before expiry"], ["weight", "By weight"],
+  ["free", "Free first"], ["fast", "Speed first"], ["cheap", "Cheapest first"], ["expiring", "Free quota by expiry"],
+  ["fit", "Small context first"],
+];
+function gatewayRoutingBadge(k) {
+  const own = k.routing || "";
+  const opts = KEY_ROUTINGS.filter(([v]) => v === own || !(ROTATION.has(v) && featuresOff.has("rotation")))
+    .map(([v, name]) => ({ v, name }))
+    .concat(jsRoutings(own).filter(([v]) => !KEY_ROUTINGS.some(([id]) => id === v)).map(([v, name]) => ({ v, name, literalName: true })));
+  const cur = opts.find((o) => o.v === own) || opts[0];
+  const word = (o) => o.literalName ? o.name : t(o.name);
+  const b = el("button", "amodels key-routing" + (own ? " set" : ""));
+  b.type = "button";
+  b.textContent = own ? word(cur) : t("Group routing");
+  b.title = t(own ? "Routing groups this key asks for route its requests this way, not by their own" : "Routing groups route this key's requests by their own routing");
+  b.setAttribute("aria-label", t("Group routing"));
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(b, opts, cur.v, async (v) => {
+      if (v === cur.v) return;
+      const out = await gatewayKeyAction("routing-key", { key: k.id, routing: v });
+      if (out) status(t("{who}: group routing {routing}", { who: k.name, routing: word(opts.find((o) => o.v === v)) }), "ok");
+    }, "Group routing", "sess-menu");
   };
   return b;
 }
