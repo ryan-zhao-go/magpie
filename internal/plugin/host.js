@@ -31,6 +31,7 @@ import dns from "node:dns"
 import fs from "node:fs"
 import http2 from "node:http2"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
 import readline from "node:readline"
 import { Duplex } from "node:stream"
@@ -729,10 +730,11 @@ function asked(input, init) {
 // that asked works (WorkDirHeader and WorkGitHeader in internal/provider),
 // that a queue needn't be waited out (FallbackHeader), and the session and
 // subagent the agent named (SessionToPluginHeader, SubagentToPluginHeader)
-// and the effort asked of a model with variants (EffortHeader):
+// and the effort asked of a model with variants (EffortHeader), and the
+// agent the request came from (CallerAgentHeader and the two beside it):
 // for the plugin to read, never for its vendor, so a plugin that sends on
 // the headers it was given sends them nowhere.
-const MAGPIE_ONLY = ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent", "x-magpie-effort"]
+const MAGPIE_ONLY = ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent", "x-magpie-effort", "x-magpie-caller-agent", "x-magpie-caller-name", "x-magpie-caller-via"]
 
 function unsaid(input, init) {
   if (input instanceof Request && MAGPIE_ONLY.some((k) => input.headers.has(k))) {
@@ -1033,7 +1035,8 @@ function authCopy(key) {
 // the two left plugin-auth.json all zero (#1505). A write or flush that
 // fails leaves p as it was.
 async function writeDurable(p, data) {
-  const tmp = p + ".tmp-" + process.pid
+  // named past the pid: another pod's host on the volume can have this one's
+  const tmp = p + ".tmp-" + process.pid + "-" + Math.random().toString(36).slice(2, 10)
   try {
     const f = fs.openSync(tmp, "w", 0o600)
     try {
@@ -1648,7 +1651,9 @@ async function gatewayBegin(p, signal) {
         outcome = code
         bytes = Number.isSafeInteger(count) && count >= 0 && count <= 32768 ? count : 0
       }
-      const ctx = { ...p.context, options: structuredClone(h.options), state: {}, signal: ownSignal, report }
+      // each hook its own copy: ctx.caller is an object, and one hook's
+      // change to it reaches no other hook
+      const ctx = { ...structuredClone(p.context), options: structuredClone(h.options), state: {}, signal: ownSignal, report }
       const result = await bounded(Promise.resolve().then(() => h.onRequest(structuredClone(body), ctx)), ownSignal)
       let next = body
       if (result !== undefined) {
@@ -3119,8 +3124,24 @@ function keepsAlive(a) {
 // account's beside plugin-auth.json, held across the plugin's refresh,
 // and the sign-in is read again under it. The lock names its holder's pid:
 // one whose holder is gone is taken over at once, and one held longer
-// than RENEW_LOCK_STALE by anyone.
+// than RENEW_LOCK_STALE by anyone. A pid is this host's to ask about only
+// in its own pid namespace: two Kubernetes pods on one volume (a rolling
+// update's old pod and new one) each run magpie as pid 1 and a host as a
+// low pid of their own, and a pod asking after the other's pid asked after
+// a process of its own, found none, and took a lock the other held: both
+// spent one refresh token. So a lock names where its pid is (renewHost), and
+// one from elsewhere is judged by its age alone.
 const RENEW_LOCK_STALE = 60 * 1000
+
+// renewHost is where this host's pid means something: the machine's (or
+// pod's) name and, on Linux, its pid namespace.
+const renewHost = (() => {
+  let ns = ""
+  try {
+    ns = fs.readlinkSync("/proc/self/ns/pid")
+  } catch {}
+  return `${os.hostname()} ${ns}`.trim()
+})()
 
 function alive(pid) {
   try {
@@ -3133,7 +3154,7 @@ function alive(pid) {
 
 async function lockRenew(key) {
   const lock = `${authPath}.renew-${createHash("sha256").update(key).digest("hex").slice(0, 16)}.lock`
-  const me = JSON.stringify({ pid: process.pid, at: Date.now(), n: randomUUID() })
+  const me = JSON.stringify({ pid: process.pid, host: renewHost, at: Date.now(), n: randomUUID() })
   fs.mkdirSync(path.dirname(authPath), { recursive: true })
   for (let start = Date.now(), wait = 10; ; wait = Math.min(wait * 2, 500)) {
     try {
@@ -3155,8 +3176,11 @@ async function lockRenew(key) {
       h = JSON.parse(raw)
     } catch {}
     // a holder gone, or one too long at it; a file not written yet is
-    // judged by its age
-    const stale = Number.isInteger(h?.pid) ? !alive(h.pid) || Date.now() - h.at > RENEW_LOCK_STALE : age > RENEW_LOCK_STALE
+    // judged by its age, and one whose pid is another pod's or machine's
+    // by its own time (a host before renewHost names none: its pid is asked
+    // after here, as it was)
+    const here = h?.host === undefined || h.host === renewHost
+    const stale = Number.isInteger(h?.pid) ? (here && !alive(h.pid)) || Date.now() - h.at > RENEW_LOCK_STALE : age > RENEW_LOCK_STALE
     if (raw !== null && (stale || Date.now() - start > 2 * RENEW_LOCK_STALE)) {
       try {
         if (fs.readFileSync(lock, "utf8") === raw) fs.unlinkSync(lock)
@@ -3292,7 +3316,11 @@ async function load({ provider, account, proxy }) {
 //       Antigravity), aside? (using it up doesn't
 //       stop the account), runsOutAt? (ISO or ms: when the soonest
 //       credits left in it are lost, apart from its reset, as WorkBuddy's
-//       packages end) / runsOut? (how many are lost then), balance?
+//       packages end) / runsOut? (how many are lost then), credits?
+//       (used up, the account goes on past it on credits it holds, which
+//       its vendor spends after it, as a Kiro trial's: routing asks the
+//       provider's other accounts first; sent with aside, which a magpie
+//       that doesn't know it goes by), balance?
 //       (how much is left, in unit, of a prepaid wallet with no total:
 //       sent without used, it is no share, yet routing knows the account
 //       and puts the one with the most left first among the provider's
@@ -3361,6 +3389,7 @@ async function usageOf(provider, account, signal) {
       aside: !!w?.aside,
       runsOutAt: when(w?.runsOutAt),
       runsOut: Math.max(0, num(w?.runsOut)),
+      credits: !!w?.credits,
       balance: typeof w?.balance === "number" && isFinite(w.balance) ? Math.max(0, w.balance) : null, // null: not said
     })),
   }
@@ -3512,6 +3541,25 @@ async function staleAccess(key, before) {
   return "kept"
 }
 
+// callerOf is the agent a request came from, as magpie's headers for the
+// plugin say it: {agent: "claude", name: "Claude Code", via: [computers]},
+// via empty for an agent on this computer, else the computers another
+// magpie passed it on through, the agent's first. undefined when magpie
+// said none.
+function callerOf(headers) {
+  const dec = (v) => {
+    try {
+      return decodeURIComponent(v ?? "")
+    } catch {
+      return ""
+    }
+  }
+  const agent = dec(headers?.["x-magpie-caller-agent"])
+  if (!agent) return undefined
+  const via = String(headers["x-magpie-caller-via"] ?? "").split(",").map(dec).filter(Boolean)
+  return { agent, name: dec(headers["x-magpie-caller-name"]) || agent, via }
+}
+
 async function fetchAs(id, record, key, params) {
   const { controller: ctl, gate } = record
   const { provider, model, npm, url, method, headers, body, session } = params
@@ -3536,6 +3584,9 @@ async function fetchAs(id, record, key, params) {
       checkFetch(record)
       m = p.models[model] ?? { id: model, providerID: provider, api: { id: model, npm } }
     }
+    // input.agent stays OpenCode's own agent ("build"), which a plugin may
+    // go by; who asked is magpie's input.caller
+    const caller = callerOf(headers)
     for (const x of said) {
       const fn = x.hooks["chat.headers"]
       const out = { headers: {} }
@@ -3544,6 +3595,7 @@ async function fetchAs(id, record, key, params) {
           {
             sessionID: session ?? "",
             agent: "build",
+            ...(caller ? { caller: structuredClone(caller) } : {}),
             model: m,
             provider: { source: "custom", info: p, options: o },
             message: { id: "", sessionID: session ?? "", role: "user", time: { created: Date.now() }, agent: "build", model: { providerID: provider, modelID: model } },

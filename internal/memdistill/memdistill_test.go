@@ -116,7 +116,6 @@ func TestReadsQuietSessionsOnce(t *testing.T) {
 	sb.session("going", 5*time.Minute, "going: one", "two")
 	sb.session("short", time.Hour, "short: hi")
 	sb.session("sub", time.Hour, "sub: one", "two").ParentSession = "quiet"
-	sb.session("gw", time.Hour, "gw: one", "two").Gateway = true
 	sb.session("old", 8*24*time.Hour, "old: one", "two")
 	sb.session("own", time.Hour, "own: one", "two").Agent = Agent
 	sb.session("unread", time.Hour).Transcript = false
@@ -203,6 +202,12 @@ func TestWhatIsSent(t *testing.T) {
 	for _, w := range []string{"secret thoughts", "rm -rf"} {
 		if strings.Contains(user, w) {
 			t.Errorf("sent: %q", w)
+		}
+	}
+	// a project's rules are left to its own files (flying_crp on X)
+	for _, w := range []string{"A rule or convention of one project belongs in the project's own instruction files and docs", "Never keep an item that disagrees with what the project's files say", "what the project's instruction files or docs say"} {
+		if !strings.Contains(sys, w) {
+			t.Errorf("the instructions lack %q", w)
 		}
 	}
 	for _, w := range []string{"magpie", "claude", "codex", "openai", "anthropic", "gpt", "gemini"} {
