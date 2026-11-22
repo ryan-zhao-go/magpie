@@ -23,6 +23,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
+	"github.com/yetone/magpie/internal/ccswitchlink"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/omarchy"
@@ -445,6 +446,7 @@ func Run(version string, showMain bool, link string) error {
 		// so do the threads.
 		OnShutdown: func() {
 			unhookNoActivate()
+			stopServing()
 			proc.EndProbes()
 			if handedOver.Load() {
 				return
@@ -774,6 +776,16 @@ func Run(version string, showMain bool, link string) error {
 	// Windows and Linux also report the start's own link as an event.
 	var skip sync.Once
 	h.app.Event.OnApplicationEvent(events.Common.ApplicationLaunchedWithUrl, func(e *application.ApplicationEvent) {
+		// a ccswitch:// link the Mac's Launch Services still sends here, from
+		// an older magpie's claim: CC Switch opens it and has its scheme back
+		if l := e.Context().URL(); ccswitchlink.Is(l) {
+			go func() {
+				if err := ccswitchlink.Forward(l); err != nil {
+					log.Println("ccswitch:// link:", err)
+				}
+			}()
+			return
+		}
 		u := ImportLink([]string{e.Context().URL()})
 		dup := false
 		if u == link {
@@ -1027,7 +1039,7 @@ func (h *host) togglePanelNow() {
 			hideWebview(h.panel)
 			return
 		}
-		_ = h.tray.PositionWindow(h.panel, 6)
+		h.placeByIcon(h.panel)
 		showWebview(h.panel).Focus()
 		h.tellPanelSide()
 		return
@@ -1036,6 +1048,14 @@ func (h *host) togglePanelNow() {
 	if h.panel.IsVisible() {
 		h.tellPanelSide()
 	}
+}
+
+// placeByIcon places the panel by the tray icon. On the Mac, Wails puts
+// the window it places at a pop-up menu's level, over a screenshot tool's
+// (zyh6036 on X), so it goes back to a menu bar extra's (setPanelLevel).
+func (h *host) placeByIcon(w *application.WebviewWindow) {
+	_ = h.tray.PositionWindow(w, 6)
+	setPanelLevel(w)
 }
 
 // tellPanelSide tells the panel, just placed, which of its edges opens the

@@ -34,6 +34,7 @@ import (
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/memory"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Complete sends one request to model, asked to reason at effort ("" the
@@ -117,8 +118,8 @@ var Path = func() string { return appdir.Join(appdir.Config(), "distill.json") }
 
 var (
 	now  = time.Now
-	list = func() []sessions.Session { return sessions.List(Listed) }
-	read = sessions.TranscriptOf
+	list = listed
+	read = transcriptOf
 	// running is held through a run in this process, and the file lock
 	// across magpies
 	running sync.Mutex
@@ -357,6 +358,33 @@ type ran struct {
 	left int
 }
 
+// listed are the latest Listed conversations as the Sessions page lists
+// them: the agents' own files and the sessions only magpie's gateway
+// recorded (WorkBuddy's, an agent's on another computer), each once
+// (sessions.GatewayKeys). Reading only the files left every agent seen
+// only through the gateway out of memory (bxgz233 on X: 1000+ WorkBuddy
+// sessions, none read).
+func listed() []sessions.Session {
+	native := sessions.List(Listed)
+	keys := map[string]bool{}
+	for _, s := range native {
+		for _, k := range sessions.GatewayKeys(s) {
+			keys[k] = true
+		}
+	}
+	all := sessions.MergeExternal(native, usage.ListedGateway(keys, Listed))
+	return all[:min(len(all), Listed)]
+}
+
+// transcriptOf reads s where it is kept: a gateway-only session from what
+// the gateway recorded of it, any other from its agent's file.
+func transcriptOf(s sessions.Session) (sessions.Transcript, error) {
+	if s.Gateway {
+		return sessions.GatewayTranscript(s.Agent, s.ID)
+	}
+	return sessions.TranscriptOf(s)
+}
+
 // forget says a read session's mark, its last turn at, can go: the
 // session is older than since, so it is never read again, or older than
 // keepMarks and than every session listed (oldest), so it was deleted or
@@ -377,7 +405,7 @@ func due(st State, t time.Time) ([]sessions.Session, time.Time) {
 			oldest = s.Last
 		}
 		switch {
-		case s.Agent == Agent, s.Gateway, s.ReadOnly, !s.Transcript,
+		case s.Agent == Agent, !s.Transcript,
 			s.ParentSession != "",
 			t.Sub(s.Last) < Quiet, s.Last.Before(st.Since):
 			continue
@@ -531,7 +559,9 @@ Keep only what stays true beyond this conversation and that a later assistant co
 
 Each item rests on words the user wrote in this conversation: quote them exactly. Leave out what only the assistant said, such as rules it follows from its own instructions or notes.
 
-Leave out: the task itself and its progress, anything about this conversation alone, code details visible in the repository, secrets (keys, tokens, passwords), and anything already in "Already known". When nothing is worth keeping, answer [].
+A rule or convention of one project belongs in the project's own instruction files and docs, which the user keeps up to date, not here: leave it out unless it is about how this user works everywhere. Never keep an item that disagrees with what the project's files say in the conversation.
+
+Leave out: the task itself and its progress, anything about this conversation alone, code details visible in the repository, what the project's instruction files or docs say, secrets (keys, tokens, passwords), and anything already in "Already known". When nothing is worth keeping, answer [].
 
 Answer with a JSON array alone, at most 5 items:
 [{"text": "one short sentence, in the language the user wrote in", "kind": "preference", "scope": "global or project", "why": "what in the conversation shows it", "quote": "the user's own words that show it, copied exactly, short"}]

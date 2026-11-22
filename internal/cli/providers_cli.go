@@ -71,7 +71,8 @@ const providerUsage = `usage:
                                           patience=default, 1m
                                           socket=auto sends its Responses turns over the Responses WebSocket,
                                           over HTTP when it can't, and over HTTP alone for 10m once the host
-                                          refuses it; socket=on tries it every turn; socket=off, the default
+                                          refuses it; socket=on tries it every turn; socket=off sends them
+                                          over HTTP alone; socket=default, auto on api.openai.com, else off
                                           errors=pass sends the agent its errors as the vendor sent them:
                                           asked once, nothing read into them, no other provider tried;
                                           errors=magpie, the default, has magpie handle them
@@ -114,10 +115,11 @@ const providerUsage = `usage:
                                           how much an API key may spend, in USD as the Usage page prices its calls,
                                           a day (the default), a month or in all from now: at it, routing takes the
                                           key for used up and goes on to the other keys and the fallbacks
-  magpie provider key-rate <id> [key [rate|default]]
+  magpie provider key-rate <id> [key [rate|default | factor <f>|default]]
                                           the price rate one API key bills at against the official price, as a relay
                                           bills its key groups apart (e.g. 0.5): the Usage page counts that key's calls
-                                          at it; default has it bill at the provider's rate
+                                          at it; default has it bill at the provider's rate. factor multiplies a rate
+                                          read from the relay (top-up rate) for that key, e.g. 1.5; default for none
   magpie provider key-balance <id> [key [usd|¥cny|off] [--refill monthly[:day]|weekly[:mon…sun]|daily|off] [--expiring amount@yyyy-mm-dd|off]… [--expiring-remove [amount@]yyyy-mm-dd]…]
                                           the balance on an API key whose vendor tells none, typed from its own page
                                           in USD or in yuan (¥100): the Usage page shows it less what magpie prices the
@@ -678,7 +680,9 @@ func providerCmd(args []string) error {
 			}
 		}
 		if !ok {
-			os.Exit(1)
+			// through Main's exit, which ends the plugin host the test
+			// started (#7146)
+			return exitError{code: 1}
 		}
 		return nil
 	case "account-models", "account-model":
@@ -975,6 +979,8 @@ func showProviderAsking(p provider.Provider, ask bool) error {
 	}
 	if p.Socket != "" {
 		kv("socket", p.Socket)
+	} else if p.SocketByDefault() {
+		kv("socket", "auto (default)")
 	}
 	switch {
 	case p.Account != nil:
@@ -1345,7 +1351,7 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			// refuses it to HTTP for a while, on tries it every turn
 			s, ok := provider.ParseSocket(v)
 			if !ok {
-				return fmt.Errorf("socket=auto|on|off, not %q", v)
+				return fmt.Errorf("socket=auto|on|off|default, not %q", v)
 			}
 			p.Socket = s
 		case "patience":
@@ -1489,10 +1495,11 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if err != nil {
 				return err
 			}
-			if r == provider.Manual || r == provider.Cheapest || r == provider.FreeExpiring {
+			if r == provider.Manual || r == provider.Cheapest || r == provider.FreeExpiring || r == provider.SmallFirst {
 				// cheap: its keys and accounts all bill the provider's one
 				// price, so there is nothing to weigh; expiring weighs
-				// several subscriptions' free quota, a group's members
+				// several subscriptions' free quota, a group's members; fit
+				// weighs models' windows, and a provider's serve one
 				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or drain", r)
 			}
 			p.Routing = r
@@ -1564,7 +1571,7 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			return fmt.Errorf("unknown field %q\n\n%s", k, providerUsage)
 		}
 	}
-	if p.Socket != "" && !p.TakesSocket() {
+	if p.Socket != "" && p.Socket != provider.SocketOff && !p.TakesSocket() {
 		return fmt.Errorf("socket=%s: %s has no Responses API of its own to speak a WebSocket to; only a provider with responses= and a key can", p.Socket, p.Name)
 	}
 	if p.NativeCompaction && !p.CarriesCompaction() {
@@ -1787,7 +1794,17 @@ func serve() error {
 	go provider.KeepRemotesUpdated(ctx, version)
 	// the models a Remote magpie's agents are on, as the app follows them
 	go agent.KeepFollowingRemote(ctx, 30*time.Second)
+	drained := make(chan struct{})
+	// a SIGTERM (Kubernetes', Docker's, a service manager's) finishes the
+	// requests in flight first (serve_drain.go)
+	finish := stopGatewayOnSignalAs(func(sig os.Signal) {
+		drainOnSignal(s, sig)
+		stop()
+		<-drained
+	})
 	err := s.ListenAndServe(ctx)
+	close(drained)
+	finish()
 	if exe := follow.restartTo(); exe != "" {
 		// the plugin hosts end, waited for, first, as magpie web's
 		// reexec does (#3285)
