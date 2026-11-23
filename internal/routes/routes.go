@@ -77,10 +77,16 @@ type Seat struct {
 	// "Free", "Free plan", a trial), as its vendor or plugin names it.
 	// FreeExpiring spends it, as it does Free, before a paid one.
 	FreePlan bool
-	// Credits: a Codex account that goes on past its allowance on its
-	// credits, and is let spend them. All but used up, it goes before
-	// those used up with nothing to go on with.
+	// Credits: an account that goes on past its allowance on its credits:
+	// a Codex account let spend them, or a plugin's whose plugin says so
+	// (a Kiro trial's). All but used up, it goes before those used up with
+	// nothing to go on with.
 	Credits bool
+	// Trial: its credits cost nothing to spend, a plugin's own trial
+	// credits (a Kiro month used up with a trial left), not bought ones a
+	// Codex account spends. What is left of the window isn't all it has,
+	// so it is weighed as having room (seatTier).
+	Trial bool
 	// First: such an account the user set to spend its credits before
 	// another account (provider.CodexCreditsFirst): its windows running
 	// out never put it behind the others (seatTier), so it keeps the
@@ -113,6 +119,9 @@ type Seat struct {
 	// costs 0. Cheapest goes by them.
 	Priced          bool
 	Cost, CacheCost float64
+	// Window is its model's context window there, in tokens, 0 when not
+	// known. SmallFirst goes by it.
+	Window int
 }
 
 // Strategy orders a pool.
@@ -143,6 +152,9 @@ type Strategy struct {
 	// trace then shows it. Only when set: pricing reads each provider's
 	// model list and the user's prices.
 	ByPrice bool
+	// ByWindow: it weighs by Window, so the gateway reads each seat's
+	// model's context window, and the routing trace then shows it.
+	ByWindow bool
 }
 
 var reg = struct {

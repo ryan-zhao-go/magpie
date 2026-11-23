@@ -373,8 +373,12 @@ const claudeReviewEnv = "CLAUDE_CODE_AUTO_MODE_SERVER"
 // (cybercaius on Discord). 2.1.304 and later turn it on there themselves;
 // "true" also keeps it on in a conversation begun without it, which
 // Claude Code otherwise holds off until it is compacted. The gateway
-// carries deferred tools to every upstream (#2660, anthropic_shapes.go).
-// One the user set is theirs.
+// carries deferred tools to Anthropic upstreams and loads them in place on
+// a Responses upstream that takes it (#2660); elsewhere a loaded tool is
+// declared from its load on (a load changes the tools, so an OpenAI-style
+// prompt cache starts again there). It never turns them away: Claude Code
+// would keep tool search off for that conversation (lightwlh on X).
+// One the user set is theirs: false keeps every tool declared and the cache.
 const claudeSearchEnv = "ENABLE_TOOL_SEARCH"
 
 // Claude Code 2.1.295's Explore inherit cap can replace Desktop's

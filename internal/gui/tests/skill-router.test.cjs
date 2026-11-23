@@ -1,6 +1,6 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// The skill router, on the Library's Skills tab: a Skill router row under
-// the list with a switch. Off, no skill has a router button. On (posts
+// The skill router, on the Library's Skills tab: a Skill router row at the
+// top, over the install card and the list, with a switch. Off, no skill has a router button. On (posts
 // skills/router {on: true}), each skill an agent may pick itself gets a
 // button that keeps it out of the router (skills/router-direct), and a
 // skill only for the user to type gets none. A skill kept out shows "Not
@@ -84,6 +84,21 @@ const sideways = (page) => page.evaluate(() => {
   return over;
 });
 
+// two cards one over the other in the Library's body, with nothing between,
+// keep room between them (the owner, 11-23: the install card sat on the
+// Skill router's): every pair of boxed neighbours is at least 10px apart
+const crowded = (page) => page.evaluate(() => {
+  const boxed = (e) => { const c = getComputedStyle(e); return parseFloat(c.borderTopWidth) > 0 || c.backgroundColor !== "rgba(0, 0, 0, 0)"; };
+  const kids = [...document.querySelectorAll("#view-library .lib-body:not(.lib-skel) > *")].filter((e) => e.getBoundingClientRect().height);
+  const out = [];
+  for (let i = 1; i < kids.length; i++) {
+    if (!boxed(kids[i - 1]) || !boxed(kids[i])) continue;
+    const gap = kids[i].getBoundingClientRect().top - kids[i - 1].getBoundingClientRect().bottom;
+    if (gap < 10) out.push(`${kids[i - 1].className} | ${kids[i].className}: ${gap.toFixed(1)}px`);
+  }
+  return { n: kids.length, out };
+});
+
 const shot = async (page, name) => {
   if (!process.env.ARTIFACT_DIR) return;
   await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
@@ -115,6 +130,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const row = v.locator(".lib-skillrouter");
         await row.waitFor();
 
+        // at the top: over the install card and the skill list
+        assert.equal(await page.evaluate(() => {
+          const v = document.querySelector("#view-library");
+          const r = v.querySelector(".lib-skillrouter"), c = v.querySelector(".lib-install"), l = v.querySelector(".lib-groups");
+          return !!(r.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(r.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING);
+        }), true, "the Skill router row is above the install card and the list");
+
         // off: the row and its switch, no router buttons, no why
         assert.equal((await row.locator(".name").textContent()).trim(), w("Skill router"));
         const sw = row.locator(".lib-switch");
@@ -122,6 +144,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await v.locator(".lib-routedirect").count(), 0);
         assert.equal(await v.locator(".lib-hub-why").count(), 0);
         assert.deepEqual(await sideways(page), []);
+        { const c = await crowded(page); assert.ok(c.n > 2, "the body is measured"); assert.deepEqual(c.out, [], "cards apart, off"); }
         await shot(page, `${engine}-${lang}-${width}-off`);
 
         // on
@@ -143,6 +166,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await found.textContent()).trim(), w("{agents} has skills of its own that aren't in the library, so the router doesn't list them: bring them in below.", { agents: "Claude Code" }));
         assert.equal(await v.locator(".lib-hub-why").count(), 2);
         assert.deepEqual(await sideways(page), []);
+        { const c = await crowded(page); assert.ok(c.n > 2, "the body is measured"); assert.deepEqual(c.out, [], "cards apart, on"); }
         await shot(page, `${engine}-${lang}-${width}-on`);
 
         // pdf kept out of the router

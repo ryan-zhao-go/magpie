@@ -210,6 +210,7 @@
       <tr><td>Codex</td><td><code>~/.codex/config.toml</code>：一个 <code>[model_providers.magpie]</code> 表和模型，模型列表写在 <code>magpie-models.json</code>。你的 ChatGPT 登录不受影响</td></tr>
       <tr><td>OpenCode、MiMo Code、DevEco Code、Pi、Crush</td><td>一个 <code>magpie</code> 供应商条目，以及 <code>magpie/provider/model</code></td></tr>
       <tr><td>Open Code Review</td><td><code>~/.opencodereview/config.json</code>：一个 <code>magpie</code> 自定义供应商，设为 <code>ocr</code> 使用的那个</td></tr>
+      <tr><td>Kigi</td><td><code>~/.kigi/config.toml</code>：每个模型一个 <code>[model."magpie/…"]</code> 表，选中的设为默认</td></tr>
       <tr><td>AtomCode</td><td><code>~/.atomcode/config.toml</code>：一个 <code>magpie</code> 供应商账号，以及目录中每个模型各自的条目</td></tr>
       <tr><td>Snow CLI</td><td><code>~/.snow/profiles/magpie.json</code>：一个 <code>magpie</code> 配置文件，并设为当前配置（Snow App 用“同步 Snow CLI API 配置”导入）</td></tr>
       <tr><td>QwenPaw</td><td><code>~/.qwenpaw.secret/providers/custom/magpie.json</code> 中的 <code>magpie</code> 提供商，以及每个智能体 <code>agent.json</code> 里的 <code>active_model</code>。首次连接后需重启 QwenPaw</td></tr>
@@ -246,6 +247,7 @@
       <tr><td>按权重 <code>weight</code></td><td>每个模型按群组编辑器里它旁边设的权重（1 到 1000，不设为 1）分得请求：权重 3 的模型每拿三个，权重 1 的拿一个，均匀穿插而不是成批。每个模型按它自己提供方的路由用自己的账号或 Key，群组里的群组算一个成员。失败后歇着的那个退出这一轮；一个失败时，下一个模型接上。</td></tr>
       <tr><td>速度优先 <code>fast</code></td><td>最近回答这个模型最快的成员、账号或 Key 先用：看首字时间和输出速度，越新的回答算得越重。相差不到一成的保持原来的顺序。一小时内没测过的每五个请求分到一个，慢过一次的渠道还会再试；失败后歇着的排最后。只测流式回复，重启后重新测。</td></tr>
       <tr><td>最便宜优先 <code>cheap</code></td><td>仅限路由组。此刻模型最便宜的成员先用，按 Usage 计费的方式算这个时段每百万输入、输出 token 的价格：你自己设的价格，否则用标价，再乘以提供方的价格倍率和分时倍率。DeepSeek 官方 API、Command Code 和 OpenCode Go 的 DeepSeek 模型在高峰时段（工作日 UTC 01:00–04:00 和 06:00–10:00）双倍计价，Ollama Cloud 的 DeepSeek V4.1 Flash 和 V4 Pro 则按它自己的高峰时段（工作日 UTC 12:00–18:00，其余时间半价），所以同一个 DeepSeek 模型挂在两个提供方上时，会交给这个时段更便宜的那个。价格相同的保持原来的顺序；不知道价格的排最后。</td></tr>
+      <tr><td>小上下文优先 <code>fit</code></td><td>仅限路由组。每个请求交给能装下它、上下文窗口最小的成员，大窗口的留给长请求。窗口比请求短的成员不参与，和其他路由方式一样。窗口一样大的按智能的顺序，窗口未知的排最后。</td></tr>
     </table></div>
     <div class="table-wrap"><table>
       <tr><th>会话保持</th><th>会话在回答过它的账号或 Key 上留多久</th></tr>

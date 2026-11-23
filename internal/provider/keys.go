@@ -107,6 +107,11 @@ type KeyRest struct {
 	// Rate: the vendor called it a rate limit and named when it lifts
 	// (gateway.Rest.Rate): the page says rate limited, not quota used up
 	Rate bool `json:"rate,omitempty"`
+	// Notice: it rests no more, but the vendor's limit is still shown
+	// (gateway.LimitNotice): Until is when the vendor said it lifts, zero
+	// when it named no time, and At when it was refused
+	Notice bool      `json:"notice,omitempty"`
+	At     time.Time `json:"at,omitzero"`
 }
 
 // RestKey is what the gateway rests the key k of a provider by: the
@@ -718,6 +723,7 @@ func ReplaceKey(id, keyRef, key string) (was, now string, err error) {
 	moveKeyed(p.AccountWindowAmounts, keyRef, now)
 	moveKeyed(p.KeyOwnBalances, keyRef, now)
 	moveKeyed(p.KeyPriceRates, keyRef, now)
+	moveKeyed(p.KeyRateFactors, keyRef, now)
 	return keyRef, now, Save(*p)
 }
 

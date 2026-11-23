@@ -68,6 +68,7 @@ import (
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/egress"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
@@ -77,14 +78,15 @@ import (
 )
 
 type subscriptionBridge struct {
-	mu      sync.Mutex
-	runs    map[string]*subscriptionRun // callback token → run
-	calls   map[string]*subscriptionRun // tool_use id → run
-	idle    map[string]*subscriptionRun // conversation so far (turnKey) → run
-	shelf   map[string]*savedSession    // conversation so far (turnKey) → its saved session
-	baseURL string
-	sweep   sync.Once
-	swept   sync.Map // Claude Code's project folders sweepSessions went through
+	mu       sync.Mutex
+	runs     map[string]*subscriptionRun // callback token → run
+	calls    map[string]*subscriptionRun // tool_use id → run
+	idle     map[string]*subscriptionRun // conversation so far (turnKey) → run
+	shelf    map[string]*savedSession    // conversation so far (turnKey) → its saved session
+	resuming map[*savedSession]bool      // taken off the shelf, not yet owned by a run
+	baseURL  string
+	sweep    sync.Once
+	swept    sync.Map // Claude Code's project folders sweepSessions went through
 	// lost is why each run that had a conversation ended, by that
 	// conversation (convKey), and lostCalls by the tool calls it waited
 	// on or was last handed results for, for the log of a request that
@@ -315,6 +317,10 @@ type subscriptionRun struct {
 	// its first turn, which a turn refused for the account's limit is
 	// cut back to (keepForReset, #6292)
 	fromLen int64
+	// fromKey is where the saved session it started from waited
+	// (savedSession.key): the turn it was started for goes on from there,
+	// which may be before Claude Code's local reply (turnFrom)
+	fromKey string
 
 	// effort is the level its Claude Code thinks at, as it started (its
 	// --effort) or was told since (setEffort, setTUIEffort); "" is Claude
@@ -853,8 +859,14 @@ func (c claudeCLI) env(env []string, configDir string) []string {
 // a SOCKS one bridged: Claude Code is built with Bun, which takes only
 // http:// and https:// proxies (#2651). One in a WSL distro reaches the
 // bridge only when the distro shares Windows' loopback.
+// A run the user's region hold keeps back (egress.Hold) gets its error,
+// and no Claude Code starts: a warm-up, a usage read or a turn alike.
 func (c claudeCLI) proxied(ctx context.Context, env []string) ([]string, error) {
-	return netproxy.EnvForBunWith(claudeProxy(ctx), env, c.wsl == nil || c.wsl.Host == "")
+	choice := claudeProxy(ctx)
+	if err := egress.Hold(ctx, choice); err != nil {
+		return nil, err
+	}
+	return netproxy.EnvForBunWith(choice, env, c.wsl == nil || c.wsl.Host == "")
 }
 
 // file is where this Claude Code reads a file of magpie's at path: one in
@@ -935,7 +947,15 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
 	var noStart *tuiNoStart
 	if errors.As(err, &noStart) {
 		// never tried again as -p (claudeTUIErr)
-		return nil, nil, claudeTUIErr("Claude Code's interactive mode didn't start: " + err.Error())
+		err := claudeTUIErr("Claude Code's interactive mode didn't start: " + err.Error())
+		if noStart.asked {
+			// a question Claude Code asks the same under every account:
+			// no account's fault, and the next isn't asked. A 502 was
+			// asked of each account in turn, each waiting out its 45s
+			// (@ahz2ygnhjmIJ0E0 on X)
+			return nil, nil, &tuiRefusal{err}
+		}
+		return nil, nil, err
 	}
 	var full *claudeFull
 	var refused *cliSchemaRefused
@@ -1344,6 +1364,9 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	if tui && !client {
 		// a saved account's run in magpie's folder is never asked (#4830)
 		trustWork(binary, configDir, work)
+	} else if tui {
+		// nor is one in the caller's folder (@ahz2ygnhjmIJ0E0 on X)
+		trustCaller(binary, configDir, work)
 	}
 	cmd.Env = binary.env(binary.asRoot(env), configDir)
 	if tui {
@@ -1452,7 +1475,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 			var unanswered *controlUnanswered
 			if tui && errors.As(err, &unanswered) {
 				// the helper hung: the turn fails (start)
-				return nil, nil, &tuiNoStart{err}
+				return nil, nil, &tuiNoStart{err: err}
 			}
 			if tui && run.saidOnEnd("claude-tui: ") && !run.saidOnEnd(claudetui.EndedEarly) {
 				// the helper ended saying why Claude Code didn't come up,
@@ -1460,7 +1483,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 				// load the session does: a new one told the whole
 				// conversation waited out the same 45s, and the turn was
 				// answered 502 after twice that (sowhynot)
-				return nil, nil, &tuiNoStart{err}
+				return nil, nil, &tuiNoStart{err: err, asked: run.saidOnEnd(claudetui.Unanswered)}
 			}
 			return nil, nil, err
 		}
@@ -1476,6 +1499,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		from.taken()
 		run.mu.Lock()
 		run.sessionID, run.fromLen = from.session, fromLen
+		run.fromKey = from.key
 		run.mu.Unlock()
 	}
 	line, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": prompt}})
@@ -1540,8 +1564,13 @@ type controlUnanswered struct{ what string }
 func (e *controlUnanswered) Error() string { return "Claude Code has not " + e.what }
 
 // tuiNoStart is a run whose interactive mode's helper never answered its
-// initialize request: start fails the turn, saying so.
-type tuiNoStart struct{ err error }
+// initialize request: start fails the turn, saying so. asked is that the
+// helper ended on a question of Claude Code's it couldn't get answered
+// (claudetui.Unanswered).
+type tuiNoStart struct {
+	err   error
+	asked bool
+}
 
 func (e *tuiNoStart) Error() string { return e.err.Error() }
 func (e *tuiNoStart) Unwrap() error { return e.err }
@@ -2050,6 +2079,13 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 		}
 	}
 	if run == nil {
+		if k, messages := b.waitingPrefix(req, owner); k != "" {
+			if r := b.idle[k]; r != nil {
+				key, since, run = k, messages, r
+			}
+		}
+	}
+	if run == nil {
 		// the client sent the conversation back rewritten (#912): the
 		// run is its own when nothing else could be, and its agent was
 		// told every tool the client offers now
@@ -2132,7 +2168,7 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 	run.segment = ch
 	run.active = time.Now()
 	run.turnUUID, run.backKey, run.backLine, run.backMsg = turn, key, run.lastLine, run.lastMsg
-	run.fromLen = 0 // it answered a turn since it started: its lines say where the conversation stood
+	run.fromLen, run.fromKey = 0, "" // it answered a turn since it started: its lines say where the conversation stood
 	run.allowed = allowedTools(req)
 	run.mu.Unlock()
 	run.endIn(runTimeout)
@@ -2181,18 +2217,85 @@ func nextTurn(req *Request, owner string) (string, []Message) {
 		return "", nil
 	}
 	since := msgs[j+1:]
+	if !selfContainedCalls(since) {
+		return "", nil
+	}
+	return turnKey(owner, req, msgs[:j+1]), since
+}
+
+// selfContainedCalls says no result in msgs answers a call before msgs.
+func selfContainedCalls(msgs []Message) bool {
 	calls := map[string]bool{}
-	for _, m := range since {
+	for _, m := range msgs {
 		for _, p := range m.Parts {
 			switch {
 			case p.Kind == ToolCall:
 				calls[p.ID] = true
 			case p.Kind == ToolResult && !calls[p.CallID]:
-				return "", nil
+				return false
 			}
 		}
 	}
-	return turnKey(owner, req, msgs[:j+1]), since
+	return true
+}
+
+// pastLocalReply is nextTurn with Claude Code's local replies passed
+// over: the conversation up to the last reply the upstream gave, and the
+// messages since, Claude Code's own and any cancelled user message among
+// them (#3808). "" when there is none to pass, or the turn isn't new.
+func pastLocalReply(req *Request, owner string) (string, []Message) {
+	msgs := req.Messages
+	if len(msgs) == 0 || msgs[len(msgs)-1].Role == "assistant" {
+		return "", nil
+	}
+	j, passed := len(msgs)-1, false
+	for j >= 0 && (msgs[j].Role != "assistant" || callsTool(msgs[j]) || localResumeReply(msgs[j])) {
+		passed = passed || localResumeReply(msgs[j])
+		j--
+	}
+	if j < 0 || !passed || !selfContainedCalls(msgs[j+1:]) {
+		return "", nil
+	}
+	return turnKey(owner, req, msgs[:j+1]), msgs[j+1:]
+}
+
+// waitingPrefix is pastLocalReply when a run waits there, or a session is
+// shelved there (b.mu held): a cancelled turn, or Claude Code's native
+// resume, adds "No response requested." to the conversation as an
+// assistant message the upstream never sent (<synthetic> in its
+// transcript; Messages carries only its role and words), so nextTurn's
+// key, taken after it, is no run's. The key is turnKey's still: the
+// account, model, settings, system prompt, tools and every message up to
+// the upstream's reply are the run's own.
+func (b *subscriptionBridge) waitingPrefix(req *Request, owner string) (string, []Message) {
+	key, since := pastLocalReply(req, owner)
+	if key == "" || b.idle[key] == nil && b.shelf[key] == nil {
+		return "", nil
+	}
+	return key, since
+}
+
+// turnFrom is the turn of req a run took at key, the conversation it
+// waited at: nextTurn's, or one past Claude Code's local reply
+// (waitingPrefix). A run refused for the limit, or a turn sent again, is
+// cut back to before the turn it took, the cancelled user message in it
+// (keepForReset, retryBranch); nextTurn's would leave that message out.
+func turnFrom(req *Request, owner, key string) (string, []Message) {
+	k, since := nextTurn(req, owner)
+	if k == "" || key == "" || k == key {
+		return k, since
+	}
+	if pk, psince := pastLocalReply(req, owner); pk == key {
+		return pk, psince
+	}
+	return k, since
+}
+
+// localResumeReply is the assistant message Claude Code adds to a
+// conversation itself, not the upstream's (NO_RESPONSE_REQUESTED in its
+// source): after a turn its user cancelled, and on a native resume.
+func localResumeReply(m Message) bool {
+	return m.Role == "assistant" && len(m.Parts) == 1 && m.Parts[0].Kind == Text && m.Parts[0].Text == "No response requested."
 }
 
 // looseTurn is a conversation a run waits at, as a client may send it
@@ -2831,6 +2934,13 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		s = b.shelf[key]
 	}
 	if s == nil {
+		if k, messages := b.waitingPrefix(req, owner); k != "" {
+			if saved := b.shelf[k]; saved != nil {
+				key, since, s = k, messages, saved
+			}
+		}
+	}
+	if s == nil {
 		// rewritten (resume); its Claude Code is told the tools the
 		// client offers now, and the session keeps the calls made of
 		// those it had
@@ -2855,16 +2965,24 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		}
 	}
 	delete(b.shelf, key)
+	if s != nil {
+		if b.resuming == nil {
+			b.resuming = make(map[*savedSession]bool)
+		}
+		b.resuming[s] = true
+	}
 	b.mu.Unlock()
 	if s == nil {
 		return nil
 	}
 	s.timer.Stop()
 	if !s.cachePrefix.accepts(req.cacheTail()) {
+		b.resumed(s)
 		s.discard()
 		return nil
 	}
 	if behind && !s.cutBehind() {
+		b.resumed(s)
 		s.discard()
 		return nil
 	}
@@ -3100,8 +3218,7 @@ func (b *subscriptionBridge) retryBranch(req *Request, owner string) *savedSessi
 	if req.clientCache != nil {
 		return nil
 	}
-	key, since := nextTurn(req, owner)
-	if key == "" {
+	if key, _ := nextTurn(req, owner); key == "" {
 		return nil
 	}
 	keys, want := conversationKeys(owner, req.Messages), historyKey(req.Messages)
@@ -3135,6 +3252,7 @@ func (b *subscriptionBridge) retryBranch(req *Request, owner string) *savedSessi
 		busy := (gone || !run.closed) && run.rewinding == nil && !run.rewound && run.lean == req.leanPrompt &&
 			!run.clientMarks && (run.tui || !wantTUI(req)) && run.told == want
 		sid, sessions, backLine, backMsg, appended, tui, prefix := run.sessionID, slices.Clone(run.sessions), run.backLine, run.backMsg, run.appended, run.tui, run.cachePrefix
+		backKey := run.backKey
 		started := run.started
 		run.mu.Unlock()
 		if !busy || sid == "" || backLine == "" && backMsg == "" || len(sessions) == 0 {
@@ -3151,7 +3269,10 @@ func (b *subscriptionBridge) retryBranch(req *Request, owner string) *savedSessi
 		if found != nil {
 			found.discard() // a newer run's copy is taken: the older one's goes
 		}
-		found, at = &savedSession{session: cut, sessions: sessions, owner: owner, at: time.Now(), since: since, tui: tui, appended: appended, cachePrefix: prefix}, started
+		// the turn as the run took it: past Claude Code's local reply,
+		// a cancelled user message is in it (#3808)
+		key, since := turnFrom(req, owner, backKey)
+		found, at = &savedSession{session: cut, sessions: sessions, owner: owner, key: key, at: time.Now(), since: since, tui: tui, appended: appended, cachePrefix: prefix}, started
 		foundEnded = nil
 		if gone {
 			foundEnded = run
@@ -3526,10 +3647,14 @@ func (b *subscriptionBridge) sweepSessions(dirs []string) {
 			continue
 		}
 		go func() {
+			kept, known := b.keptSessions()
+			if !known {
+				return
+			}
 			entries, _ := os.ReadDir(dir)
 			for _, e := range entries {
 				sid, ok := strings.CutSuffix(e.Name(), ".jsonl")
-				if !ok || e.IsDir() {
+				if !ok || e.IsDir() || kept[filepath.Join(dir, e.Name())] {
 					continue
 				}
 				if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > idleLongest+time.Minute {
@@ -4120,6 +4245,10 @@ func cleanClaudeEnvTTL(env []string, ttl string) []string {
 		"CLAUDE_CODE_OAUTH_TOKEN": true, "CLAUDE_CODE_PROMPT_CACHE_TTL": true, "FORCE_PROMPT_CACHING_5M": true,
 		"CLAUDE_CODE_EXTRA_BODY": true, "ANTHROPIC_BETAS": true,
 	}
+	// magpie's routing names, never Anthropic's (claudeModelEnv)
+	for _, k := range claudeModelEnv {
+		blocked[k] = true
+	}
 	out := make([]string, 0, len(env)+3)
 	for _, e := range env {
 		k, _, _ := strings.Cut(e, "=")
@@ -4361,6 +4490,9 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 	var before, this Usage
 	var lateUsage cliUsage    // a message left out as told by its call (onCall)
 	var reqID, errKind string // the last request's id, and how it failed
+	// when the limit that turned the turn away renews, as its
+	// rate_limit_event said: told with the turn's error (Event.Resets)
+	var refusedTill time.Time
 	usage := func(u cliUsage) Usage {
 		v := u.gateway()
 		this.add(v)
@@ -4747,6 +4879,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			if user, own := ownerAccount(r.owned()); user != "" && !(own && provider.ClaudeCodeMovedOff(user)) {
 				provider.NoteClaudeLimits(user, claudeLimits(envelope.RateLimitInfo))
 			}
+			refusedTill = rejectedTill(envelope.RateLimitInfo, time.Now())
 			return
 		}
 		if envelope.Type == "result" && retell && !envelope.IsError {
@@ -4780,6 +4913,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		}
 		if envelope.Type == "result" {
 			retell, answerAsked = false, false
+			defer func() { refusedTill = time.Time{} }() // the next turn's is its own
 			silent, said := !begun, aside
 			begun, aside = false, ""
 			// a turn that failed — out of quota, rate limited — ends with
@@ -4812,7 +4946,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 					!(own && provider.ClaudeCodeMovedOff(user)) {
 					provider.NoteClaudeSignInFailure(user, r.loginVersion, text)
 				}
-				r.emit(Event{Kind: KError, Text: text, Status: envelope.APIErrorStatus, Code: errKind, RequestID: reqID})
+				r.emit(Event{Kind: KError, Text: text, Status: envelope.APIErrorStatus, Code: errKind, RequestID: reqID, Resets: refusedTill})
 				r.endSegment()
 			case cut:
 				failed("and Claude Code ended the turn without asking again")
@@ -5135,6 +5269,24 @@ func claudeLimits(raw json.RawMessage) []provider.ClaudeLimit {
 		}
 	}
 	return out
+}
+
+// rejectedTill is when the limit a rate_limit_event's info says turned the
+// request away renews: its resetsAt, when it is rejected and the time is
+// still to come. Zero otherwise: one that only reports what is used says
+// nothing of a refusal.
+func rejectedTill(raw json.RawMessage, now time.Time) time.Time {
+	var info struct {
+		Status   string `json:"status"`
+		ResetsAt int64  `json:"resetsAt"`
+	}
+	if json.Unmarshal(raw, &info) != nil || info.Status != "rejected" || info.ResetsAt <= 0 {
+		return time.Time{}
+	}
+	if t := time.Unix(info.ResetsAt, 0); t.After(now) {
+		return t
+	}
+	return time.Time{}
 }
 
 // carryUpdate keeps this message's known 1h writes when a partial split
@@ -7230,6 +7382,14 @@ func (b *subscriptionBridge) whyCallsLost(req *Request) string {
 
 func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
 	defer s.bridgeTurn()()
+	if err := awaitPredecessorSessions(r.Context()); err != nil {
+		if r.Context().Err() != nil {
+			return http.StatusServiceUnavailable, "waiting for the previous gateway to save Claude sessions: " + err.Error()
+		}
+		// what would have been resumed is replayed, as before the wait: a
+		// turn is not refused for the gateway it was handed over from
+		log.Printf("claude: going on without the previous gateway's saved sessions: %v", err)
+	}
 	owner := p.ID
 	if p.Account != nil {
 		owner += "\x00" + p.Account.User
@@ -7250,6 +7410,9 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
 		// a run let go past idleMost left its session for this turn, or
 		// the run whose calls another request answered first has it
 		from := s.subscription.unshelve(req, owner)
+		if from != nil {
+			defer s.subscription.resumed(from)
+		}
 		if from == nil {
 			from = req.branch
 		}
@@ -7706,6 +7869,17 @@ func unansweredWhy(said string) string {
 	return errEndedShort.Error()
 }
 
+// resetsOn tells restAfter, beside a refusal, when the limit that
+// refused it renews (resetsHeader, never sent on to the client): Claude
+// Code's own words for it ("resets Nov 25 at 10am (Asia/Shanghai)") are
+// not read, and an account out for its week rested a quarter of an hour.
+func resetsOn(w http.ResponseWriter, t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	w.Header().Set(resetsHeader, strconv.FormatInt(t.Unix(), 10))
+}
+
 // bridgeFailed is the status and words a client is answered with when an
 // agent's run ended in an error before any answer: the status the agent
 // got, else a guess from the words, else 502.
@@ -7724,6 +7898,12 @@ func bridgeFailed(name, msg string, status int) (int, string) {
 		return status, msg
 	case quotaSaid(msg):
 		return 429, msg
+	case name == "Claude Code" && claudeOffWords.MatchString(msg):
+		// the account on hold, as Claude Code says it with no status of
+		// the API's (account_on_hold): a 502 rested it a minute and asked
+		// it again; the account's own refusal, read as restricted
+		// (claudeAccountOff)
+		return http.StatusForbidden, msg
 	case unpastedSaid(name, msg):
 		// the same message fails the same way on every account and on
 		// every try: a 502 was asked again and again (ok123now on X)
@@ -8026,6 +8206,7 @@ func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol
 			code := 502
 			if n > 0 {
 				code, msg = bridgeFailed(name, head[n-1].Text, head[n-1].Status)
+				resetsOn(w, head[n-1].Resets)
 			}
 			abort(code, msg)
 			// what Anthropic said the reply's start used, the conversation
@@ -8123,6 +8304,7 @@ func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol
 		// client yet, so it is told the failure, as a translated reply
 		// cut short is (errEndedShort)
 		code, msg := bridgeFailed(name, col.err, col.errStatus)
+		resetsOn(w, col.errResets)
 		abort(code, msg)
 		usage.add(col.res.Usage)
 		if len(col.res.Parts) == 0 && redoable(r, name, req, code, msg) {

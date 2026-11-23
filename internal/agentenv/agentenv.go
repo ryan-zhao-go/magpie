@@ -69,6 +69,8 @@ var Vars = []string{
 	"QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR",
 	// Grok: its home, and where its CLI is installed
 	"GROK_HOME", "GROK_BIN_DIR",
+	// Kigi's home (its config.toml), ~/.kigi without it
+	"KIGI_SHARE_DIR",
 	// Grok App's data folder (its agent-home/config.toml), else the OS's app-data one
 	"GROK_APP_HOME",
 	// Kimi Code and its shared folder
@@ -89,6 +91,10 @@ var Vars = []string{
 	// Kun's data folder (its runtime.json and model-connections.v2.json),
 	// ~/.kun/data without it
 	"KUN_DATA_DIR",
+	// Nowledge Mem's config folder (its remote_llm.json), and where its
+	// backend listens (the nmem CLI's), 127.0.0.1:14242 without it
+	"NMEM_APP_CONFIG_DIR",
+	"NMEM_API_URL",
 	// AstrBot's root, the folder holding its data/ (else ~/.astrbot, the desktop app's)
 	"ASTRBOT_ROOT",
 	// Dim alpha's folder (dima), ~/.dimcode-alpha without it
@@ -102,6 +108,8 @@ var Vars = []string{
 	"OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR", "OPENCLAW_PROFILE", "OPENCLAW_HOME",
 	// MiMo Code, MiniMax Code, OpenHanako, Hermes, dsh, WorkBuddy, CodeBuddy Code
 	"MIMOCODE_HOME", "MINIMAX_DATA_DIR", "MAVIS_DATA_DIR", "HANA_HOME", "PASEO_HOME", "HERMES_HOME", "DSH_HOME",
+	// dsh-web's search provider, which magpie leaves to the user when set
+	"DSH_WEB_SEARCH_PROVIDER",
 	"WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR",
 	// DS Bot's data folder, and its Electron userData holding locations.json
 	"DS_BOT_HOME", "DS_BOT_SHELL_DATA",
@@ -170,6 +178,7 @@ var Vars = []string{
 var NotPaths = map[string]bool{
 	"PI_PROFILE": true, "OMP_PROFILE": true,
 	"WINDSURF_API_SERVER_URL": true, "ZCODE_CREDENTIAL_SECRET": true,
+	"AGY_LLM_GATEWAY_URL": true, "NMEM_API_URL": true,
 	"PI_CONFIG_DIR": true, "OPENCODE_DB": true,
 	"STEPCODE_CONFIG_DIR": true,
 	"MAGPIE_ZED_BIN":      true, "MAGPIE_ZED_PROCESS_NAMES": true,
