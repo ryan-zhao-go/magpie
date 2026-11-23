@@ -446,6 +446,14 @@ func targetOf(a *agent.Agent) *Target {
 		t.MCP = &mcpFile{Path: a.Path, Format: fmtGrok}
 		t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
 		t.Skills = filepath.Join(a.Dir, "skills")
+	case "kigi":
+		// Kigi, a fork of Grok Build, reads the same [mcp_servers.<name>]
+		// tables from its config.toml, AGENTS.md from its home
+		// ($KIGI_SHARE_DIR, else ~/.kigi; prompt/agents_md.rs) and skills
+		// from skills there and in ~/.agents (prompt/skills.rs)
+		t.MCP = &mcpFile{Path: a.Path, Format: fmtGrok}
+		t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
+		t.Skills = filepath.Join(a.Dir, "skills")
 	case "grok-app":
 		// Independent mode (Use on a custom provider) starts the CLI with
 		// GROK_HOME at agent-home, beside config.toml (grok-app's
@@ -619,6 +627,16 @@ func targetOf(a *agent.Agent) *Target {
 		t.Instructions = filepath.Join(d, "steering", "AGENTS.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "settings", "mcp.json"), Format: fmtKiro}
 		t.Skills = filepath.Join(d, "skills")
+	case "trae-cn":
+		// TRAE CN 2.3.105403 reads its skills from <home>/<dataFolderName>/
+		// skills, ~/.trae-cn/skills (docs.trae.cn/ide_skills), and the
+		// mcpServers of mcp.json in its userData's User folder, with a JSONC
+		// parser and a watch on the file (apps). Its skills are found by a
+		// loader in its Rust agent (libai_agent) that nothing shows
+		// following a link, so it gets copies (takesCopies)
+		t.MCP = &mcpFile{Path: a.Path, Format: fmtTrae}
+		t.Skills = filepath.Join(h, ".trae-cn", "skills")
+		t.Copy = takesCopies(a.ID)
 	case "liveagent":
 		// LiveAgent's engine, K-brain, keeps its MCP servers in
 		// config.json.live-mcp.json beside its config.json, in the folder
@@ -630,6 +648,13 @@ func targetOf(a *agent.Agent) *Target {
 		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, liveAgentMCP), Format: fmtLiveAgent}
 		t.Skills = filepath.Join(a.Dir, "skills")
 		t.Copy = true
+	case "openclaw":
+		// OpenClaw keeps its MCP servers under mcp.servers in the
+		// openclaw.json magpie sets its model in (agent.openClawPaths),
+		// and takes a change to mcp without a restart (OpenClaw
+		// 2026.11.6 docs/cli/mcp.md, config-reload-plan "mcp" hot;
+		// JeffreyCalm on X)
+		t.MCP = &mcpFile{Path: a.Path, Format: fmtOpenClaw}
 	case "claude-desktop":
 		// Claude Desktop reads only commands from its file: a remote server
 		// is added in its own Connectors settings. In its 3p mode (magpie's
@@ -909,7 +934,7 @@ func wslOpened(t *Target) {
 // the one targetOf makes on this machine, given copies (#1323).
 var ownFolder = map[string]bool{
 	"hermes": true, "omp": true, "opencode": true, "mimocode": true, "droid": true,
-	"grok": true, "commandcode": true, "atomcode": true, "qoder": true, "qoder-cn": true,
+	"grok": true, "kigi": true, "commandcode": true, "atomcode": true, "qoder": true, "qoder-cn": true,
 	"minimax-code": true, "fx": true, "dsh": true, "qwen": true,
 }
 
@@ -977,6 +1002,18 @@ func apps() []*agent.Agent {
 		bin = "kiro-cli"
 	}
 	out = append(out, &agent.Agent{ID: "kiro-cli", Name: "Kiro CLI", Icon: "kiro-color", Bin: bin})
+	// TRAE CN (#5889), ByteDance's VS Code fork, is no agent magpie wires
+	// a model into either. It is found by its Electron userData, named for
+	// its product.json nameShort "Trae CN" (~/Library/Application
+	// Support/Trae CN, %APPDATA%\Trae CN, ~/.config/Trae CN), which holds
+	// the user-wide mcp.json it reads (TRAE CN 2.3.105403's workbench:
+	// joinPath(userSettingsResource, "..", "mcp.json")). Its skills are
+	// in ~/.trae-cn, a folder named for its dataFolderName that the
+	// international Trae's ~/.trae is not
+	if d, err := os.UserConfigDir(); err == nil {
+		dir := filepath.Join(d, "Trae CN")
+		out = append(out, &agent.Agent{ID: "trae-cn", Name: "TRAE CN", Icon: "trae", Dir: dir, Path: filepath.Join(dir, "User", "mcp.json")})
+	}
 	return out
 }
 
@@ -1063,14 +1100,14 @@ func (l *Library) held(have []*Target) []*Target {
 	for _, t := range have {
 		in[t.Agent.ID] = true
 	}
+	// what magpie wrote here, not a tick: one a synced library brought from
+	// another computer for an agent this one never had is nothing to take
+	// out of it, and listed on every row of the servers and skills ticked
+	// for it (izhidigua on X: MCP listed the Claude family and Pi, which
+	// aren't installed, and Skills didn't)
 	has := func(id string) bool {
-		if a := l.Applied[id]; a != nil && (len(a.Skills) > 0 || len(a.MCP) > 0 || len(a.Hooks) > 0 || len(a.Env) > 0 || a.Router || len(a.RouterRules) > 0) {
-			return true
-		}
-		return slices.ContainsFunc(l.Skills, func(s *Skill) bool { return s.gives(id) }) ||
-			slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) }) ||
-			slices.ContainsFunc(l.Hooks, func(h *Hook) bool { return slices.Contains(h.Agents, id) }) ||
-			slices.ContainsFunc(l.Env, func(e *EnvVar) bool { return slices.Contains(e.Agents, id) })
+		a := l.Applied[id]
+		return a != nil && (len(a.Skills) > 0 || len(a.MCP) > 0 || len(a.Hooks) > 0 || len(a.Env) > 0 || a.Router || len(a.RouterRules) > 0)
 	}
 	var out []*Target
 	for _, a := range append(apps(), agent.All()...) {
@@ -1109,6 +1146,27 @@ func skipsJunctions(id string) bool {
 	return linkOS == "windows" && slices.Contains(junctionBlind, id)
 }
 
+// projectLinkBlind are the agents that skip magpie's link in a project's
+// skills folder on every system, and list a folder there: agy 1.5.14 on
+// macOS lists a copied <project>/.agents/skills/<skill> and not the
+// symlink to the library's (#7506, jinpwng on X; agy --print /skills, with
+// a control repository listing none). The app reads skills through the
+// same customizations walk as agy (junctionBlind), so it is taken alike.
+var projectLinkBlind = []string{"agy", "antigravity"}
+
+// projectCopies is whether the agent is given a copy in a project's
+// skills folder rather than magpie's link.
+func projectCopies(id string) bool {
+	return skipsJunctions(id) || slices.Contains(projectLinkBlind, id) || takesCopies(id)
+}
+
+// takesCopies is whether the agent is given copies of its skills, in its
+// own folder and a project's, on every system: TRAE CN's skills are read
+// by its Rust agent (modules/ai-agent, 2.3.105403), which can't be seen
+// to follow a link, so it gets real folders rather than links it may
+// skip.
+func takesCopies(id string) bool { return id == "trae-cn" }
+
 // readsShared are the agents that read ~/.agents/skills as well as their
 // own folder (each one's docs or source): Kimi Code's own is
 // ~/.kimi-code/skills besides it (#4379). OmO's engine, senpi, a fork of
@@ -1116,7 +1174,7 @@ func skipsJunctions(id string) bool {
 // does (core/package-manager.js, userAgentsSkillsDir, @code-yeongyu/senpi
 // 2026.5.13). ZCode reads it beside ~/.zcode/skills (#4987). mu is Pi
 // 1.4.0 (core/package-manager.ts, qybaihe/mu b71cd18).
-var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "ds-bot", "commandcode", "devin", "droid", "cline", "grok", "grok-app", "fx", "alma", "kimi", "omo", "zcode", "mu"}
+var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "ds-bot", "commandcode", "devin", "droid", "cline", "grok", "kigi", "grok-app", "fx", "alma", "kimi", "omo", "zcode", "mu"}
 
 // Pi reads ~/.agents/skills from 0.54.0 (2026-02-19, its CHANGELOG: "Added
 // default skill auto-discovery for .agents/skills locations … global
@@ -1214,9 +1272,10 @@ func Takes(q, kind string) (string, error) {
 		}
 	}
 	what := map[string]string{"instructions": "instructions", "mcp": "MCP servers", "skills": "skills"}[kind]
-	// an app found by its program alone (Kiro CLI) that isn't here: told
-	// so, not recorded and then given nothing, as Targets leaves it out
-	if app && a.Bin != "" && !a.Detected() {
+	// an app found by its program alone (Kiro CLI), or by its own folder
+	// (TRAE CN), that isn't here: told so, not recorded and then given
+	// nothing, as Targets leaves it out
+	if app && (a.Bin != "" || a.ID == "trae-cn") && !a.Detected() {
 		return "", fmt.Errorf("%s isn't installed here; nothing reads its %s until it is", a.Name, what)
 	}
 	// gone for its CLI, as Targets leaves it out (#2254): told so, not

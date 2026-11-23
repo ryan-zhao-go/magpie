@@ -58,6 +58,13 @@ const (
 	// (routes.FreeExpiring; wowbbs on Discord: five check-in accounts of
 	// WorkBuddy, MiniMax, Trae and Qoder in one group). A group's only.
 	FreeExpiring = "expiring"
+	// SmallFirst sends a request to the member with the smallest context
+	// window that holds it, so the big ones are kept for long requests
+	// (routes.SmallFirst; yg6888 on X: Composer's 200K and Grok 4.7's
+	// 256K never answered in a group of 1M models under Smart). Members
+	// too small are left out as under every routing (roomy). A group's
+	// only: a provider's keys and accounts serve one window.
+	SmallFirst = "fit"
 )
 
 // FreePlan says whether an account's plan, as its vendor or plugin names
@@ -81,6 +88,16 @@ var pluginRouting = lazyre.New(`^[A-Za-z0-9._-]+/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // keeps one as saved, served now or not: one no plugin serves is tried in
 // its listed order.
 func PluginRouting(routing string) bool { return pluginRouting.MatchString(routing) }
+
+// GroupRouting says whether routing is one a routing group can be routed
+// by besides Smart (""): a built-in one, Manual, or a plugin's.
+func GroupRouting(routing string) bool {
+	switch routing {
+	case Ordered, Rotate, LeastUsed, Pace, Weighted, FreeFirst, Fastest, Cheapest, Drain, FreeExpiring, SmallFirst, Manual:
+		return true
+	}
+	return PluginRouting(routing)
+}
 
 // SetRouting changes how a provider's requests spread over its keys or
 // accounts.
@@ -220,6 +237,12 @@ func SetRestartApp(id string, on bool) error {
 	p.RestartApp = on
 	return Save(*p)
 }
+
+// CodexRestartsApp is codexRestartsApp, for the agent package: a change
+// of Codex's route magpie makes by itself restarts the Codex app's
+// app-server (moving the chats it has open first, CodexBeforeAppEnd) only
+// when it says so.
+func CodexRestartsApp() bool { return codexRestartsApp() }
 
 // codexRestartsApp is whether the user had magpie restart the Codex app's
 // app-server for a change it makes by itself (Provider.RestartApp). While

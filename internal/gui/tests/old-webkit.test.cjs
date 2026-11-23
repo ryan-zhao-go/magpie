@@ -178,7 +178,8 @@ test("compat.js is the first of the page's own scripts", async () => {
   // pipecheck.js when Settings draws Models; relaycheck.js on Usage › Model
   // speed's first Check… press;
   // addfloat.js when the Providers page's add sheet first opens;
-  // plugingrid.js and plugininstalled.js when Plugins first draws;
+  // plugingrid.js, plugininstalled.js and pluginpartners.js when Plugins
+  // first draws;
   // rotfig.js when a routing's In turn is first shown;
   // ompadvisor.js when an omp's settings first show;
   // kimisub.js when a Kimi Code row's Subagents line first shows;
@@ -186,6 +187,7 @@ test("compat.js is the first of the page's own scripts", async () => {
   // claudemagpie.js when Claude Desktop's twin button or Advanced fold first shows;
   // keyrates.js when a provider with two or more keys opens;
   // maximages.js when the provider editor draws Max output;
+  // retrievalrows.js when the editor or Fetch models has embedding or rerank models;
   // appearance.js when Settings draws General or the look changes;
   // navorder.js once a page order is kept, or Settings › Sidebar pages draws;
   // the checks above

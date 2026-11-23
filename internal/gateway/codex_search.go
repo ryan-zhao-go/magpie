@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -111,7 +112,10 @@ type searchTarget struct {
 // alpha/search under its Responses address: a key+URL provider set to
 // search the web by itself (Searches, #359), as a relay of OpenAI's API
 // or of the ChatGPT backend does. Such a relay's web.run was searched by
-// magpie, and the relay's own search never used (YIXIE233 on X).
+// magpie, and the relay's own search never used (YIXIE233 on X). A
+// partner's word (provider.PresetSearches) is not read: it is about the
+// web_search tools, and CoreCode, which runs both, has no alpha/search,
+// so its web.run is magpie's search as before.
 func upstreamSearches(p provider.Provider) bool {
 	return p.Account == nil && !p.IsPlugin() && p.Searches && p.Base(provider.Responses) != ""
 }
@@ -140,7 +144,7 @@ func (s *Server) relaySearchers(r *http.Request, model string) []searchTarget {
 			keep := groupKeeps(who, g, ms)
 			ms = slices.DeleteFunc(slices.Clone(ms), func(m provider.Member) bool { return !keep[m.Provider.ID+"/"+m.Model] })
 		}
-		cs, _ = s.planGroup(g.Live(), ms, provider.Responses)
+		cs, _ = s.planGroup(keyRouted(access.Caller(r.Context()), g.Live()), ms, provider.Responses)
 	} else {
 		p, bare, ok := provider.Resolve(model)
 		if !ok || keyHeld && !modelAllowed(who, p, bare) {

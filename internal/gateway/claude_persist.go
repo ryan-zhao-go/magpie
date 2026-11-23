@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"maps"
@@ -83,6 +84,7 @@ var shelfRead sync.Map
 // left on disk when it ends.
 func (b *subscriptionBridge) keepShelf() {
 	b.mu.Lock()
+	b.waitCancelled(context.Background(), "")
 	for key, run := range b.idle {
 		if run.idleKey == key {
 			b.shelve(run)
@@ -129,9 +131,15 @@ func (b *subscriptionBridge) keepShelf() {
 }
 
 // loadShelf puts the saved sessions an earlier gateway left on the shelf,
-// when the file changed since this one looked (b.mu not held). A file that
-// can't be read whole is unknown: nothing is taken from it.
+// when the file changed since this one looked (b.mu not held: it is taken
+// for the shelf only). A file that can't be read whole is unknown: nothing
+// is taken from it.
 func (b *subscriptionBridge) loadShelf() {
+	// the file and the shelf change together for the sweep (keptSessions):
+	// its entries are never in neither; b.mu is held only for the shelf,
+	// not for the file's reads, as every Claude turn waits on it
+	shelfFileMu.Lock()
+	defer shelfFileMu.Unlock()
 	path := shelfPath()
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -149,23 +157,24 @@ func (b *subscriptionBridge) loadShelf() {
 	if json.Unmarshal(data, &f) != nil || f.Version != shelfFileVersion {
 		return
 	}
+	var saved []*savedSession
+	for _, e := range f.Entries {
+		if s := e.saved(); s != nil {
+			saved = append(saved, s)
+		}
+	}
 	// taken away: what a run goes on with from here is not what it says
 	if os.Remove(path) != nil {
 		return
 	}
-	for _, e := range f.Entries {
-		s := e.saved()
-		if s == nil {
-			continue
-		}
-		b.mu.Lock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, s := range saved {
 		if b.shelf[s.key] != nil {
-			b.mu.Unlock()
 			continue
 		}
 		b.shelf[s.key] = s
 		b.shelfTimer(s)
-		b.mu.Unlock()
 	}
 }
 
@@ -241,6 +250,64 @@ func quotaShelfFor(owner, msg string, now time.Time) time.Duration {
 	return min(max(d+quotaShelfMargin, idleLongest), quotaShelfLongest)
 }
 
+// A replacement request can arrive while the cancelled request is still
+// cutting its transcript or rewinding its process. Only requests for the
+// same history wait; shutdown waits for all cancellations already observed.
+type cancelTurn struct {
+	ctx  context.Context
+	key  string
+	done chan struct{}
+}
+
+func (b *subscriptionBridge) watchCancel(ctx context.Context, key string) (*cancelTurn, error) {
+	if key == "" {
+		return nil, ctx.Err()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.waitCancelled(ctx, key); err != nil {
+		return nil, err
+	}
+	c := &cancelTurn{ctx: ctx, key: key, done: make(chan struct{})}
+	if b.cancelTurns == nil {
+		b.cancelTurns = make(map[*cancelTurn]struct{})
+	}
+	b.cancelTurns[c] = struct{}{}
+	return c, nil
+}
+
+func (b *subscriptionBridge) finishCancel(c *cancelTurn) {
+	if c != nil {
+		b.mu.Lock()
+		delete(b.cancelTurns, c)
+		close(c.done)
+		b.mu.Unlock()
+	}
+}
+
+// waitCancelled is called with b.mu held and returns with it held.
+func (b *subscriptionBridge) waitCancelled(ctx context.Context, key string) error {
+	for ctx.Err() == nil {
+		var wait chan struct{}
+		for c := range b.cancelTurns {
+			if (key == "" || c.key == key) && c.ctx.Err() != nil {
+				wait = c.done
+				break
+			}
+		}
+		if wait == nil {
+			break
+		}
+		b.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+		}
+		b.mu.Lock()
+	}
+	return ctx.Err()
+}
+
 // keepForReset shelves the session of run, whose turn of req was refused
 // for the limit of owner's account before any of its reply (relay, msg
 // the refusal's words), as the conversation stood before that turn: a
@@ -256,20 +323,27 @@ func quotaShelfFor(owner, msg string, now time.Time) time.Duration {
 // (rewound) and not gone on with since, or one with the client's own
 // cache marks, as no branch is cut of one.
 func (b *subscriptionBridge) keepForReset(run *subscriptionRun, req *Request, owner, msg string) {
-	key, since := nextTurn(req, owner)
-	if key == "" {
+	b.keepBeforeTurn(run, req, owner, msg, "")
+}
+
+// keepBeforeTurn saves a separate transcript ending before the request.
+// A cancellation needs the ordinary shelf lifetime and a verified cut.
+func (b *subscriptionBridge) keepBeforeTurn(run *subscriptionRun, req *Request, owner, msg, cancelledKey string) {
+	if key, _ := nextTurn(req, owner); key == "" || cancelledKey != "" && key != cancelledKey {
 		return
 	}
 	run.mu.Lock()
 	sid, sessions, tools := run.sessionID, slices.Clone(run.sessions), maps.Clone(run.tools)
 	skip := run.closed || run.rewound && !run.replied || run.clientMarks || run.rewinding != nil
+	skip = skip || cancelledKey != "" && cancelledKey != run.backKey
 	fromLen, backLine, backMsg := run.fromLen, run.backLine, run.backMsg
+	fromKey, backKey := run.fromKey, run.backKey
 	tui, appended, prefix := run.tui, run.appended, run.cachePrefix
 	run.mu.Unlock()
 	if skip || sid == "" || len(sessions) == 0 {
 		return
 	}
-	var cut string
+	var cut, took string
 	var err error
 	switch {
 	case fromLen > 0:
@@ -281,23 +355,47 @@ func (b *subscriptionBridge) keepForReset(run *subscriptionRun, req *Request, ow
 			}
 			return int(fromLen)
 		})
+		took = fromKey
+	case cancelledKey != "":
+		// The TUI pastes the prompt, so its native user row doesn't carry
+		// the bridge UUID. Only the completed preceding reply proves H.
+		if backMsg == "" {
+			return
+		}
+		cut, err = cutSessionWhere(sessions, sid, "completed reply "+backMsg, func(b []byte, _ bool) int {
+			return cutAfterReply(b, backMsg, true)
+		})
+		took = backKey
 	case backLine != "" || backMsg != "":
 		cut, err = cutReply(sessions, sid, backLine, backMsg)
+		took = backKey
 	default:
 		return
 	}
 	if err != nil {
-		log.Printf("claude: the session of a turn refused for the account's limit couldn't be cut before the turn (%v); the turn asked again is told the whole conversation", err)
+		log.Printf("claude: the session couldn't be cut before the interrupted turn (%v); the turn asked again is told the whole conversation", err)
 		return
 	}
+	// the turn as the run took it: past Claude Code's local reply, a
+	// cancelled user message is in it, and the turn asked again is told it
+	// (#3808)
+	key, since := turnFrom(req, owner, took)
 	conv := ""
 	if keys := conversationKeys(owner, req.Messages[:len(req.Messages)-len(since)]); len(keys) > 0 {
 		conv = keys[len(keys)-1]
 	}
 	now := time.Now()
 	s := &savedSession{session: cut, sessions: sessions, owner: owner, conv: conv, key: key, tools: tools,
-		at: now, until: onWall(now.Add(quotaShelfFor(owner, msg, now))), tui: tui, appended: appended, cachePrefix: prefix}
+		at: now, tui: tui, appended: appended, cachePrefix: prefix}
+	if cancelledKey == "" {
+		s.until = onWall(now.Add(quotaShelfFor(owner, msg, now)))
+	}
 	b.mu.Lock()
+	if cancelledKey != "" && (run.handed || b.stopping) {
+		b.mu.Unlock()
+		s.discard()
+		return
+	}
 	if old := b.shelf[key]; old != nil {
 		go old.discard()
 	}
@@ -305,5 +403,74 @@ func (b *subscriptionBridge) keepForReset(run *subscriptionRun, req *Request, ow
 	b.shelfTimer(s)
 	b.trimShelf()
 	b.mu.Unlock()
+	if cancelledKey != "" {
+		log.Printf("claude: the cancelled turn left its session cut before the turn for a replacement request")
+		return
+	}
 	log.Printf("claude: a turn refused for the account's limit leaves its conversation's session, cut before the turn, for the turn asked again until %s", heldClock(s.until, now))
+}
+
+// shelfFileMu is held while the shelf file is read for what it keeps
+// (keptSessions) and while its entries move to the shelf (loadShelf).
+var shelfFileMu sync.Mutex
+
+// resumed ends the protection while a saved session changes owners.
+func (b *subscriptionBridge) resumed(s *savedSession) {
+	b.mu.Lock()
+	delete(b.resuming, s)
+	b.mu.Unlock()
+}
+
+// keptSessions includes sessions waiting for quota resets, even if their
+// transcripts have not changed for hours. An unreadable shelf is unknown:
+// leave the files alone rather than destroy the only resumable history.
+func (b *subscriptionBridge) keptSessions() (map[string]bool, bool) {
+	shelfFileMu.Lock() // loadShelf moves none from the file to the shelf meanwhile
+	defer shelfFileMu.Unlock()
+	kept := make(map[string]bool)
+	add := func(dirs []string, session string) {
+		for _, dir := range dirs {
+			kept[filepath.Join(dir, session+".jsonl")] = true
+		}
+	}
+	data, err := os.ReadFile(shelfPath())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, false
+	}
+	if err == nil {
+		var f shelfFile
+		if json.Unmarshal(data, &f) != nil || f.Version != shelfFileVersion {
+			return nil, false
+		}
+		for _, entry := range f.Entries {
+			if s := entry.saved(); s != nil {
+				add(s.sessions, s.session)
+			}
+		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	save := func(s *savedSession) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.gone {
+			add(s.sessions, s.session)
+		}
+	}
+	for _, s := range b.shelf {
+		save(s)
+	}
+	for s := range b.resuming {
+		// taken marks it gone just before the run publishes its session id.
+		// The transfer owns the file until resumed releases this pin.
+		s.mu.Lock()
+		add(s.sessions, s.session)
+		s.mu.Unlock()
+	}
+	for _, r := range b.runs {
+		r.mu.Lock()
+		add(r.sessions, r.sessionID)
+		r.mu.Unlock()
+	}
+	return kept, true
 }

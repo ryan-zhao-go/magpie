@@ -128,6 +128,18 @@ func CodexLiveList(ctx context.Context) ([]byte, error) {
 	return b, nil
 }
 
+// CodexClientVersion is the Codex client version the backend's model
+// list is asked for now (codexVersion): a list asked for an older one may
+// lack a model the backend lists only to a newer client.
+func CodexClientVersion() string { return codexVersion() }
+
+// CodexVersionBehind says a list asked for Codex version asked is behind
+// now, the version magpie asks as (CodexClientVersion), or its version
+// isn't known (codexListBehind).
+func CodexVersionBehind(asked, now string) bool {
+	return asked == "" || asked != now && newerVersion(asked, now) != asked
+}
+
 var codexVersionCache struct {
 	sync.Mutex
 	v  string
@@ -473,10 +485,7 @@ const listRound = 10 * time.Minute
 // codexListBehind says a ChatGPT account's list asked for Codex version
 // asked is behind the one magpie asks as now, or its version wasn't kept:
 // a model the backend lists only to a newer client may be missing from it.
-func codexListBehind(asked string) bool {
-	now := codexVersion()
-	return asked == "" || asked != now && newerVersion(asked, now) != asked
-}
+func codexListBehind(asked string) bool { return CodexVersionBehind(asked, codexVersion()) }
 
 // Levels are the reasoning levels the account's own list gives the model —
 // a Free ChatGPT plan's may be fewer than a Plus one's — and ok is false
@@ -767,7 +776,8 @@ func CodexOwnLeftOut(keep string) func(slug string) bool {
 // CodexOrder is where each model of Codex's list goes when the user put
 // them in an order of their own on the Agents page (#855), by the slug
 // Codex knows it by — a ChatGPT account's own by its bare one, as the
-// backend lists it — and whether they did. A model it doesn't name keeps
+// backend lists it, and by magpie's id, as magpie lists one the backend's
+// list lacks — and whether they did. A model it doesn't name keeps
 // its place after them.
 func CodexOrder() (map[string]int, bool) {
 	order := ModelOrder("codex")
@@ -784,12 +794,19 @@ func CodexOrder() (map[string]int, bool) {
 		if !ok {
 			continue
 		}
-		slug := e.ID
-		if CodexOwn(e) {
-			slug = e.Model
+		put := func(slug string) {
+			if cur, seen := out[slug]; !seen || i < cur {
+				out[slug] = i
+			}
 		}
-		if cur, seen := out[slug]; !seen || i < cur {
-			out[slug] = i
+		put(e.ID)
+		// the account's own goes by its bare slug where the backend's list
+		// has it, and by magpie's id where that list lacks it
+		// (CodexListedBeside): GPT-6.2, beside a list asked for before it
+		// came, went last in the Codex app's picker wherever it was put
+		// (Wangalan167673 on X)
+		if CodexOwn(e) {
+			put(e.Model)
 		}
 	}
 	return out, true
@@ -1010,13 +1027,15 @@ func codexListedIf(shown []Entry, members func(id string) []Member, listed func(
 	s := settings.Load().ForAgent("codex")
 	find := func(id string) (Group, []Member, bool) { return Group{}, members(id), true }
 	apart := codexApart(shown, labels, listed)
+	// read once a list, and only where a model may need it (UltraOn)
+	ultra := sync.OnceValue(UltraModels)
 	for i, e := range shown {
 		if !listed(e) {
 			continue
 		}
 		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: CodexEfforts(e), Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex, Apart: apart[i]}
 		m.Compact = CompactFor(s, e, find)
-		CodexTiers(&m, e, members)
+		CodexTiersWith(&m, e, members, ultra)
 		CodexSeals(&m, e, members)
 		ms = append(ms, m)
 	}
@@ -1100,8 +1119,16 @@ func codexApart(shown []Entry, labels []string, listed func(Entry) bool) []strin
 // CodexTiers sets on m what Codex is offered on e's service tiers
 // (codexcat.Entries turns them into the entry's service_tiers): one source
 // for every list Codex is handed, the gateway's and the models.json file
-// magpie writes for a Codex CLI that names magpie its provider (#1530).
+// magpie writes for a Codex CLI that names magpie its provider (#1530), and
+// the /v1/models another magpie that has this one as its provider reads
+// them from (RemoteTiers, #1234).
 func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
+	CodexTiersWith(m, e, members, sync.OnceValue(UltraModels))
+}
+
+// CodexTiersWith is CodexTiers with UltraModels read through ultra, once
+// for a whole list.
+func CodexTiersWith(m *catalog.Model, e Entry, members func(id string) []Member, ultra func() map[string]bool) {
 	// a provider the user added by its address is sent the tier Codex
 	// asks for as it is (hsiangron on X)
 	m.OwnTier = e.Group == "" && e.Provider.Preset == "" && e.Provider.Account == nil && e.Provider.ID != ""
@@ -1113,13 +1140,13 @@ func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
 		m.Tiers = e.Tiers
 	}
 	if e.Group != "" {
-		fast := false
+		fast, ultrafast := false, false
 		for _, mb := range members(e.ID) {
 			if a := mb.Provider.Account; a != nil && a.Agent == "codex" && strings.HasPrefix(mb.Model, "gpt-") {
 				m.Fast = true
-				break
 			}
 			fast = fast || CanFast(mb.Provider, mb.Model)
+			ultrafast = ultrafast || UltraOn(mb.Provider, mb.Model, ultra())
 		}
 		// a group with another member that has a fast mode (an OpenAI or
 		// Anthropic key's, a relay's GPT, Cursor's, a plugin's) is offered
@@ -1130,12 +1157,27 @@ func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
 		if !m.Fast && fast {
 			m.Tiers = []string{codexFastTier}
 		}
+		// and Ultrafast where a member offers it, which the gateway asks of
+		// that member, asking one that has none for priority in its place
+		// (tierMate): a magpie that has this one as its provider was
+		// offered Fast alone on such a group (OoopsHh on X)
+		if ultrafast {
+			m.Tiers = []string{codexFastTier, codexUltraTier}
+		}
 		return
 	}
 	// so is a model of its own that has one, which no tier above names
 	// (an Anthropic key's Opus, an OpenAI key's GPT, a Cursor account's)
 	if len(m.Tiers) == 0 && CanFast(*e.Provider, e.Model) {
 		m.Tiers = []string{codexFastTier}
+	}
+	// and Ultrafast where its key or account offers it (UltraOn: an OpenAI
+	// key's gpt-6.2-sol, a ChatGPT account whose plan has it), which only
+	// Codex's own list said: a magpie in Docker, with no Codex there,
+	// offered Fast alone to the magpie that has it as its provider
+	// (OoopsHh on X)
+	if slices.Contains(m.Tiers, codexFastTier) && !slices.Contains(m.Tiers, codexUltraTier) && UltraOn(*e.Provider, e.Model, ultra()) {
+		m.Tiers = append(slices.Clip(m.Tiers), codexUltraTier)
 	}
 }
 
@@ -1166,6 +1208,9 @@ func maySeal(p Provider) bool {
 
 // codexFastTier is Fast's service tier as Codex sends it.
 const codexFastTier = "priority"
+
+// codexUltraTier is Codex's Ultra Fast, the tier faster than priority.
+const codexUltraTier = "ultrafast"
 
 // CodexListRevoked says err, from CodexLiveList, is the backend calling
 // Codex's sign-in revoked (SignInRevoked), not a refusal a refresh mends,

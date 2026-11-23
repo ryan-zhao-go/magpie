@@ -32,6 +32,7 @@ package library
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -168,13 +169,31 @@ func (l *Library) hubFor(t *Target, a *Applied, entries map[string]map[string]an
 	if l.server(HubEntry) != nil {
 		return nil, hubTaken
 	}
-	if _, ok := entries[HubEntry]; ok && !slices.Contains(a.MCP, HubEntry) {
+	if _, ok := entries[HubEntry]; ok && !slices.Contains(a.MCP, HubEntry) && !l.sharerWrote(t, HubEntry) {
 		return nil, hubOwn
 	}
 	if err := t.MCP.foreign(entries[HubEntry]); err != nil {
 		return nil, hubOwn
 	}
 	return hs, ""
+}
+
+// sharerWrote is whether another agent reading the very file t does has
+// name down as written by magpie: Antigravity and agy share
+// ~/.gemini/config/mcp_config.json, and the entry the one wrote there is
+// magpie's for the other too, not a server of the user's own
+// (izhidigua on X).
+func (l *Library) sharerWrote(t *Target, name string) bool {
+	id := t.Agent.ID
+	for other, a := range l.Applied {
+		if other == id || a == nil || !slices.Contains(a.MCP, name) {
+			continue
+		}
+		if o := targetByID(other); o != nil && o.MCP != nil && o.MCP.Path == t.MCP.Path {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- what the gateway asks -------------------------------------------------
@@ -207,18 +226,26 @@ func hubServers(agentID string) []*Server {
 func (l *Library) hubServers(agentID string) []*Server {
 	id, key, scoped := strings.Cut(agentID, gateway.HubProjectSep)
 	var p *Project
+	var given map[string][]string // the project's servers, its plugins' too
 	if scoped {
 		p = l.projectByKey(key)
 	}
+	if p != nil {
+		_, given, _ = l.withPlugins(p)
+	}
+	natives := l.claudeHubNatives(id, p)
 	var out []*Server
 	for _, s := range l.MCP {
 		on := id == "" && !s.Hidden || slices.Contains(s.Agents, id)
 		if p != nil {
 			if slices.Contains(p.ServersOff[s.Name], id) {
 				on = false
-			} else if !s.Hidden && slices.Contains(p.Servers[s.Name], id) {
+			} else if !s.Hidden && slices.Contains(given[s.Name], id) {
 				on = true
 			}
+		}
+		if _, ok := natives[s.Bundle]; ok && s.Bundle != "" {
+			on = false // Claude Code runs the plugin's own
 		}
 		if on && inHub(s, id) {
 			out = append(out, s)
@@ -316,7 +343,7 @@ func (theHub) Call(ctx context.Context, agentID, server, tool string, args json.
 	ss := hubServers(agentID)
 	i := slices.IndexFunc(ss, func(s *Server) bool { return s.Name == server })
 	if i >= 0 && !gateway.HubVisitorOf(ctx).Gives(hubServerOf(ss[i])) {
-		return nil, errors.New("it acts as this computer's user, so magpie runs it for this computer's agents only")
+		return nil, errors.New("it isn't given to this caller. " + gateway.HubHeldReason(hubServerOf(ss[i])))
 	}
 	if i < 0 && agentID == "" {
 		return nil, errors.New("it isn't in magpie's Library")
@@ -1123,3 +1150,22 @@ var (
 	_ hubConn = (*streamConn)(nil)
 	_ hubConn = (*httpConn)(nil)
 )
+
+// hubFindsItself is the names of the agents the router gives every tool
+// whole, as they search their MCP tools themselves (gateway.HubFindsItself),
+// for the Tools on demand row to say: its words named four of the six
+// (11-18). An agent's name doesn't change while magpie runs, so they are
+// looked up once; one not found is said by its id.
+var hubFindsItself = sync.OnceValue(func() []string {
+	names := map[string]string{}
+	for _, a := range append(apps(), agent.All()...) {
+		if _, ok := names[a.ID]; !ok && a.WSL == "" {
+			names[a.ID] = a.Name
+		}
+	}
+	var out []string
+	for _, id := range gateway.HubFindsItself() {
+		out = append(out, cmp.Or(names[id], id))
+	}
+	return out
+})

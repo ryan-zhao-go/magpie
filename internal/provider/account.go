@@ -321,6 +321,11 @@ func (p Provider) Retry(ctx context.Context, sent []byte, status int, body []byt
 // Explain is the error a refusal is passed on as: msg, with what the
 // user can do about it when the account knows.
 func (p Provider) Explain(msg string, status int, body []byte) string {
+	if hint := p.NoCreditHint(status, body); hint != "" {
+		// a key at Anthropic's own API out of its organization's credit
+		// (anthropic_credit.go)
+		return msg + " — " + hint
+	}
 	if p.Account == nil || p.Account.explain == nil {
 		return msg
 	}
@@ -1883,7 +1888,7 @@ func copilotModels(ctx context.Context, app copilotApp) ([]catalog.Model, error)
 	copilotSeenMu.Lock()
 	for _, m := range v.Data {
 		if m.Capabilities.Type == "chat" {
-			copilotSeen[m.ID] = copilotAPIs(m.Endpoints)
+			copilotSee(m.ID, m.Endpoints)
 		}
 	}
 	copilotSeenMu.Unlock()
