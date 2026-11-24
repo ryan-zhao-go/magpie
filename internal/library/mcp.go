@@ -309,6 +309,15 @@ const (
 	// config.json.live-mcp.json: a list of servers, each by its id, stdio
 	// or streamable HTTP (liveagent.go)
 	fmtLiveAgent
+	// fmtOpenClaw is OpenClaw's openclaw.json mcp.servers: command/args/
+	// env, or url/headers with a transport, where a url with none is SSE
+	// (OpenClaw 2026.11.6 docs/cli/mcp.md, McpServerSchema)
+	fmtOpenClaw
+	// fmtTrae is TRAE CN's User/mcp.json in its userData: mcpServers of
+	// command/args/env or url/headers, no type on an entry, a url
+	// streamable HTTP and no way to name SSE (TRAE CN 2.3.105403's
+	// workbench)
+	fmtTrae
 )
 
 // mcpFile is the file an agent keeps its user-wide MCP servers in.
@@ -349,7 +358,7 @@ func (f *mcpFile) key() string {
 		return "mcp"
 	case fmtGoose:
 		return "extensions"
-	case fmtZCode:
+	case fmtZCode, fmtOpenClaw:
 		return "mcp.servers"
 	case fmtZed:
 		return "context_servers"
@@ -362,7 +371,7 @@ func (f *mcpFile) supports(s *Server) error {
 	if f.Format == fmtDesktop && s.Remote() {
 		return errNoRemote
 	}
-	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed || f.Format == fmtKiro || f.Format == fmtLiveAgent) {
+	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed || f.Format == fmtKiro || f.Format == fmtTrae || f.Format == fmtLiveAgent) {
 		return errNoSSE
 	}
 	if f.Format == fmtDsh && s.Name != "" && !dshServerName.MatchString(s.Name) {
@@ -753,7 +762,31 @@ func (f *mcpFile) encode(s *Server) ordered {
 				add("transport", "stdio")
 			}
 		}
-	case fmtKiro:
+	case fmtOpenClaw:
+		// as `openclaw mcp set` takes one: a url with no transport is
+		// SSE to OpenClaw, so streamable HTTP is named, and `type: "http"`
+		// is an alias its doctor rewrites (docs/cli/mcp.md)
+		if s.Remote() {
+			add("url", s.URL)
+			t := "streamable-http"
+			if s.Transport == "sse" {
+				t = "sse"
+			}
+			add("transport", t)
+			optional("headers", s.Headers)
+		} else {
+			add("command", s.Command)
+			add("args", list(s.Args))
+			optional("env", s.Env)
+		}
+		// OpenClaw gives a request a minute unless the entry says more
+		// (mcp-transport-config DEFAULT_REQUEST_TIMEOUT_MS); every other
+		// key fails the whole file (`openclaw config validate`), timeout
+		// among them
+		if t := selfTimeout(s, 0); t > 0 {
+			add("requestTimeoutMs", t*1000)
+		}
+	case fmtKiro, fmtTrae:
 		// as the docs show them: command/args/env, or url/headers — no
 		// type, the entry's shape saying which (kiro.dev/docs/mcp/
 		// configuration); an SSE server never comes this far
@@ -1068,12 +1101,29 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 		if f.Format == fmtPiNative && name == HubEntry {
 			s.about = str(m, "description")
 		}
-	case fmtKiro:
+	case fmtKiro, fmtTrae:
 		// a url is streamable HTTP: the docs give no way to name SSE
 		// (kiro.dev/docs/mcp/configuration), so no transport in the entry
 		// is read as one
 		if u := str(m, "url"); u != "" {
 			remote("http", u, m["headers"])
+		} else {
+			local(str(m, "command"), m["args"], m["env"])
+		}
+	case fmtOpenClaw:
+		// streamable HTTP when the transport (or the type alias `openclaw
+		// mcp set` also takes) says so, else SSE: a url with no transport
+		// is SSE to OpenClaw (mcp-config-normalize.ts)
+		if u := str(m, "url"); u != "" {
+			named := str(m, "transport")
+			if named == "" {
+				named = str(m, "type")
+			}
+			t := "sse"
+			if n := strings.ToLower(strings.TrimSpace(named)); n == "streamable-http" || n == "http" {
+				t = "http"
+			}
+			remote(t, u, m["headers"])
 		} else {
 			local(str(m, "command"), m["args"], m["env"])
 		}
@@ -1377,9 +1427,16 @@ var owned = map[mcpFormat][]string{
 	// disabled, autoApprove, disabledTools and oauth are the user's; a
 	// transport names nothing Kiro reads
 	fmtKiro: {"transport", "url", "headers", "command", "args", "env"},
+	// cwd, oauth, disabled and fromGalleryId are the user's (TRAE CN's
+	// own entries); a transport names nothing TRAE CN reads
+	fmtTrae: {"transport", "url", "headers", "command", "args", "env"},
 	// enabled, and the id's description, docsUrl, cwd, timeoutMs,
 	// workspaceRoots, policy and auth, are the user's
 	fmtLiveAgent: {"transport", "url", "headers", "command", "args", "env"},
+	// enabled, cwd, the timeouts, auth, oauth, toolFilter, sslVerify and
+	// the client certificate are the user's; a type is the alias OpenClaw
+	// rewrites to transport
+	fmtOpenClaw: {"transport", "type", "url", "headers", "command", "args", "env"},
 
 	// a url agy read in place of serverUrl goes when magpie writes one
 	fmtAntigravity: {"type", "serverUrl", "url", "headers", "command", "args", "env"},

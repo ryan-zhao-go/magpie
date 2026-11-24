@@ -38,6 +38,9 @@ type Library struct {
 	// Commands are slash commands the agents ticked for each are given
 	// (commands.go)
 	Commands []*Command `json:"commands,omitempty"`
+	// Rules are files of guidance given to the agents ticked for each,
+	// in their own folder of rules (rules.go)
+	Rules []*Rule `json:"rules,omitempty"`
 	// Plugins are the Claude Code plugins kept as one item each: its
 	// skills, servers, hooks and subagents are the items above marked
 	// with its name (plugin.go)
@@ -86,6 +89,9 @@ type Library struct {
 	// router was given a server, for one the user removed not to come
 	// back (bridge_mcp.go)
 	BridgesOffered []string `json:"bridgesOffered,omitempty"`
+	// ArtifactsOffered is set once Magpie Artifacts was given to the agents,
+	// for a user who removed it not to see it come back (artifacts.go)
+	ArtifactsOffered bool `json:"artifactsOffered,omitempty"`
 	// BridgesOn are the Remote magpies (provider ids) the user asked to
 	// give their router a server, in the editor's switch (bridge_mcp.go)
 	BridgesOn []string `json:"bridgesOn,omitempty"`
@@ -166,6 +172,9 @@ type Applied struct {
 	// Commands are the files magpie wrote for the slash commands, kept as
 	// Subagents are
 	Commands []SubagentFile `json:"commands,omitempty"`
+	// Rules are the files magpie wrote for the rules, kept as Subagents
+	// are
+	Rules []SubagentFile `json:"rules,omitempty"`
 	// Startup is, for each server, the startup timeout magpie wrote in its
 	// entry (Codex's startup_timeout_sec): one there other than this is
 	// the user's
@@ -192,7 +201,7 @@ type Applied struct {
 func (a *Applied) empty() bool {
 	return !a.Instructions && a.InstrHash == "" && len(a.MCP) == 0 && len(a.Skills) == 0 &&
 		len(a.ToolsOff) == 0 && len(a.ToolRules) == 0 && len(a.Hooks) == 0 && len(a.Env) == 0 &&
-		len(a.Subagents) == 0 && len(a.Commands) == 0 && len(a.Startup) == 0 && len(a.Picked) == 0 && !a.Router && len(a.RouterRules) == 0 && len(a.RouterCommands) == 0
+		len(a.Subagents) == 0 && len(a.Commands) == 0 && len(a.Rules) == 0 && len(a.Startup) == 0 && len(a.Picked) == 0 && !a.Router && len(a.RouterRules) == 0 && len(a.RouterCommands) == 0
 }
 
 var mu lock // one change at a time, from the page or the CLI's process
@@ -231,6 +240,7 @@ func load() (*Library, error) {
 	l.heal()           // magpie's own servers run this computer's magpie (self_here.go)
 	l.carryTwin()      // Claude Magpie keeps what it was given as Claude Desktop (desktop_twin.go)
 	l.healPluginRefs() // a plugin's parts that still name its variables (plugin_env.go)
+	l.strayPiBack()    // a project's Pi sources v0.1.4702 read as "package" and "extension" (project_shapes.go)
 	return l, nil
 }
 
@@ -260,6 +270,10 @@ func (l *Library) save() error {
 	for _, c := range l.Commands {
 		c.Agents = orNone(c.Agents)
 	}
+	sort.Slice(l.Rules, func(i, j int) bool { return l.Rules[i].Name < l.Rules[j].Name })
+	for _, r := range l.Rules {
+		r.Agents = orNone(r.Agents)
+	}
 	// an entry with nothing in it is no record of what magpie wrote, and
 	// is not kept: a sync that only looked at an agent used to leave one
 	// behind, one per agent, and the write its save brought into a file
@@ -285,6 +299,9 @@ func (l *Library) save() error {
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
 		return err
+	}
+	if err := l.reshapedCopy(); err != nil {
+		return fmt.Errorf("keeping %s before writing it in magpie's shape: %w", path(), err)
 	}
 	return edit.WriteAtomic(path(), append(b, '\n'))
 }
@@ -384,6 +401,8 @@ func changeLocked(f func(l *Library) error) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// what a subagent's file says first, for f to change that
+	l.followSubagentFiles()
 	if err := f(l); err != nil {
 		return nil, err
 	}

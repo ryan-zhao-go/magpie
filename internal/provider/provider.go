@@ -425,9 +425,10 @@ type Provider struct {
 	// Discord): SocketAuto tries it and falls back to HTTP, and leaves the
 	// host to HTTP for a while once it refuses the handshake, as
 	// chatgpt.com is; SocketOn tries it every time and falls back without
-	// that. "", the default, is HTTP alone. Only a provider of a key with a
-	// Responses URL takes it (TakesSocket). Set with `magpie provider set
-	// <id> socket=`.
+	// that; SocketOff is HTTP alone. "", the default, is auto on OpenAI's
+	// own API and HTTP alone elsewhere (SocketMode). Only a provider of a
+	// key with a Responses URL takes it (TakesSocket). Set with `magpie
+	// provider set <id> socket=`.
 	Socket string `json:"socket,omitempty"`
 
 	// NativeCompaction has Codex's compaction_trigger go to the provider
@@ -606,6 +607,25 @@ type Provider struct {
 	// at 0.5× and 1.2×), by its KeyID. A key not in it bills at PriceRate
 	// (see key_rate.go).
 	KeyPriceRates map[string]float64 `json:"keyPriceRates,omitempty"`
+	// TopUpRate is, for a relay built on sub2api, what one of its dollars
+	// cost the user (@YIXIE233 on X: ¥7 for $100 is 0.07): each key's
+	// group rate is read from the relay (key_rate_read.go) and the key
+	// bills at that times this, unless it has a rate in KeyPriceRates.
+	// 0 is none: no group rate is read.
+	TopUpRate float64 `json:"topUpRate,omitempty"`
+	// RateReadHours is, for a provider with a TopUpRate, how many hours a
+	// key's read group rate stands before it is read again (@YIXIE233 on
+	// X asked for 3), 1 to 168; 0 is the default, six.
+	RateReadHours int `json:"rateReadHours,omitempty"`
+	// KeyRateFactors is, for a provider with a TopUpRate, what each key's
+	// read rate is multiplied by, by its KeyID (@YIXIE233 on X: groups of
+	// one relay whose upstream caches differ cost 2-3x apart at the same
+	// group rate). A key not in it has 1; a rate in KeyPriceRates is
+	// never multiplied (see key_rate.go).
+	KeyRateFactors map[string]float64 `json:"keyRateFactors,omitempty"`
+	// zeroRate marks a PriceRate of 0 that is a rate, a free group's, not
+	// the price as listed; set by atKeyRate alone
+	zeroRate bool
 
 	// BalanceURL, when set, is where the vendor tells what is left on a
 	// key, asked with the key the way a chat request carries it; BalancePath
@@ -1014,6 +1034,7 @@ func (p Provider) clone() Provider {
 	p.KeySpendCaps = maps.Clone(p.KeySpendCaps)
 	p.KeyOwnBalances = maps.Clone(p.KeyOwnBalances)
 	p.KeyPriceRates = maps.Clone(p.KeyPriceRates)
+	p.KeyRateFactors = maps.Clone(p.KeyRateFactors)
 	if p.AccountWindowCaps != nil {
 		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
 		for k, v := range p.AccountWindowCaps {
@@ -1887,6 +1908,13 @@ func normalize(p Provider) Provider {
 	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
 	p.KeyOwnBalances = normalKeyOwnBalances(p.KeyOwnBalances)
 	p.KeyPriceRates = normalKeyPriceRates(p.KeyPriceRates)
+	p.KeyRateFactors = normalKeyRateFactors(p.KeyRateFactors)
+	if TopUpRateOK(p.TopUpRate) != "" {
+		p.TopUpRate = 0
+	}
+	if RateReadHoursOK(p.RateReadHours) != "" {
+		p.RateReadHours = 0
+	}
 	if len(p.Models) > 0 {
 		p.NoModels = false // a pick is no longer Select none
 	}
@@ -2377,6 +2405,16 @@ func (p Provider) Native(model string) Protocol {
 	}
 	if len(out) == 0 {
 		return ""
+	}
+	// a remote magpie's own best API for it (magpie_prefers): its list
+	// names every API the model goes on as it is in the order its provider
+	// speaks them, Chat first, so a GPT its OpenAI key or ChatGPT sign-in
+	// serves best on Responses, and a routing group whose members are,
+	// was asked on Chat here — where OpenAI turns away the max effort
+	// Responses takes (OoopsHh on X: Pi's openai/* and auto/* on
+	// openai-completions, codex/* alone on openai-responses)
+	if pr := p.RemotePrefers(model); pr != "" && slices.Contains(out, pr) {
+		return pr
 	}
 	if p.ResponsesFirst(model) && slices.Contains(out, Responses) {
 		return Responses

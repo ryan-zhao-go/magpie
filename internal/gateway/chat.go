@@ -736,13 +736,20 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 //     reasoning — is dropped inside a pending exchange, where it would
 //     sit between calls and their answers. One with neither text nor
 //     calls was taken out before, wherever it stood
-//     (withoutSilentAssistants, #2599).
+//     (withoutSilentAssistants, #2599);
+//   - a system or developer message between the calls and their tool
+//     messages goes after them: DeepSeek takes it for the message after
+//     the calls and refuses the request ("tool_use ids were found
+//     without tool_result blocks immediately after"), and read as the
+//     turn after them it gave the calls synthetic results and the real
+//     ones went as user text.
 func pairToolMessages(msgs []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	var pending []string          // calls of the last assistant message with tool_calls
 	order := map[string]int{}     // a pending call's place among them
 	answered := map[string]bool{} // pending calls a tool message answered
 	var tools []map[string]any    // answers to pending, held for sorting
+	var held []map[string]any     // system messages after pending's calls
 
 	flushTools := func() {
 		if len(tools) == 0 {
@@ -763,6 +770,8 @@ func pairToolMessages(msgs []map[string]any) []map[string]any {
 			}
 		}
 		pending, order, answered = nil, map[string]int{}, map[string]bool{}
+		out = append(out, held...)
+		held = nil
 	}
 	// toolAsUser turns a tool message that answers no pending call into a
 	// user message carrying its result. A user message just emitted takes
@@ -818,6 +827,15 @@ func pairToolMessages(msgs []map[string]any) []map[string]any {
 			}
 			answered[id] = true
 			tools = append(tools, m)
+		case "system", "developer":
+			if len(pending) > 0 {
+				// between the calls and their tool messages, which must
+				// follow them at once (DeepSeek, Kimi): it goes after
+				// them, and the results it stood before stay results
+				held = append(held, m)
+				continue
+			}
+			out = append(out, m)
 		default:
 			flushPending()
 			out = append(out, m)
@@ -1150,6 +1168,10 @@ type cUsage struct {
 	CompletionTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details,omitempty"`
+	// ReasoningTokens is Copilot's count of them, at the top of its usage
+	// beside completion_tokens, which counts them too (probed live on
+	// gemini-4-hydrogen: "completion_tokens":88, "reasoning_tokens":48)
+	ReasoningTokens int `json:"reasoning_tokens"`
 	// what others say was read from their cache, when prompt_tokens_details
 	// doesn't: DeepSeek's hits, Moonshot's cached_tokens, Mistral's
 	// num_cached_tokens (its older top-level count, which its API still
@@ -1203,6 +1225,9 @@ func (u cUsage) usage() Usage {
 	}
 	if u.CompletionTokensDetails != nil {
 		out.Reasoning = u.CompletionTokensDetails.ReasoningTokens
+	}
+	if out.Reasoning == 0 {
+		out.Reasoning = u.ReasoningTokens
 	}
 	if c := u.Credit; c != nil && *c >= 0 {
 		out.Credits = c

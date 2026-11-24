@@ -26,7 +26,7 @@ const PLUGINS = [
   { id: "middleware", name: "JS gateway plugins", sub: "Run the JavaScript gateway plugins: middleware on agents' requests and replies, routings and usage observers", one: "1 gateway plugin on", many: "{n} gateway plugins on" },
   { id: "otel", name: "Observability", sub: "Send each request's traces and metrics to an OpenTelemetry collector, such as Langfuse", one: "Sending to a collector", many: "Sending to a collector" },
   { id: "redact", name: "Privacy masking", sub: "Secrets, personal data and your own words go to vendors as placeholders, and come back as they were", one: "Masking is on", many: "Masking is on" },
-  { id: "rotation", name: "Routing strategies", sub: "The routings besides Smart: In order, Until used up, In turn, Least used first, Use before expiry, By weight, Free first, Speed first and Cheapest first", one: "1 provider or group routed so", many: "{n} providers and groups routed so" },
+  { id: "rotation", name: "Routing strategies", sub: "The routings besides Quota first: In order, Until used up, In turn, Least used first, Use before expiry, By weight, Free first, Speed first and Cheapest first", one: "1 provider or group routed so", many: "{n} providers and groups routed so" },
   { id: "routing", name: "Routing", sub: "Each request as the gateway routes it, the accounts it weighed and what each answered, and your routing groups", one: "1 group in use", many: "{n} groups in use" },
   { id: "search", name: "Web search", sub: "Models that can't search the web search with a provider that can, or a search API", one: "1 search source set up", many: "{n} search sources set up" },
   { id: "sessions", name: "Sessions", sub: "Your agents' past conversations: read, search, resume and export them", one: "Recording gateway conversations", many: "Recording gateway conversations" },
@@ -116,7 +116,7 @@ function server(lang, posts, broken) {
 // the pages' tabs shown, the page shown
 const tabs = (page) => page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].filter((b) => !b.hidden && b.offsetParent && getComputedStyle(b).display !== "none").map((b) => b.dataset.view));
 const viewShown = (page) => page.evaluate(() => [...document.querySelectorAll("main.view")].filter((v) => !v.hidden).map((v) => v.id));
-// the tabs with Sessions and Library off, the preset's masking on
+// the tabs with Sessions and Library (and its Artifacts) off, the preset's masking on
 // (Routing groups has a tab of its own in the sidebar only, from 1024
 // points; under it Routing's page opens them)
 const KEPT = ["agents", "providers", "routing", "gateway", "usage", "masking", "plugins"];
@@ -203,11 +203,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const say = await page.evaluate((v) => document.querySelector(`#nav [data-view="${v}"]`).textContent, v);
           assert.equal((await page.locator(`#builtinList [data-id="${id}"] .feat-go`).textContent()).trim(), say, `${where}: ${id} leads to ${v}`);
         }
+        // a link that starts its line has its word flush with the row's name
+        // (the owner, 11-20: 「网关」 sat 4px in from 「密钥限额」 above it)
+        for (const id of ["budget", "rotation", "middleware", "tools", "gateway"]) {
+          const [name, word] = await page.evaluate((id) => {
+            const r = document.querySelector(`#builtinList [data-id="${id}"]`), b = r.querySelector(".feat-go > .link");
+            const range = document.createRange();
+            range.selectNodeContents(b);
+            return [r.querySelector(".name").getBoundingClientRect().left, range.getBoundingClientRect().left];
+          }, id);
+          assert.ok(Math.abs(word - name) <= 1, `${where}: ${id}'s link starts at ${word}, its name at ${name}`);
+        }
+        // and one after a word or a warning keeps its own room
+        const after = await page.evaluate(() => [...document.querySelectorAll("#builtinList .feat-go > .link")].filter((b) => { const r = document.createRange(); r.setStart(b.parentElement, 0); r.setEndBefore(b); return r.toString().trim(); }).map((b) => getComputedStyle(b).marginLeft));
+        assert.ok(after.length && after.every((m) => m === "0px"), `${where}: links after a word, ${after}`);
         // Library switched on: its tab is back at once, the page stays
         await page.locator('#builtinList [data-id="library"] [role="switch"]').click();
         await page.waitForSelector('#builtinList [data-id="library"] [aria-checked="true"]');
         assert.deepEqual(posts, [["library", true]], where);
-        if (width >= 800) assert.deepEqual(await tabs(page), ["agents", "library", ...keptAt(width).slice(1)], `${where}: Library back`);
+        if (width >= 800) assert.deepEqual(await tabs(page), ["agents", "library", "artifacts", ...keptAt(width).slice(1)], `${where}: Library back`);
         assert.deepEqual(await viewShown(page), ["view-plugins"], `${where}: Plugins stays`);
         // Observability's, Routing's and Usage's rows can be below the fold:
         // the reader scrolls to them with the wheel, since the page puts back
@@ -257,7 +271,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator('#builtinList [data-id="routing"] [role="switch"]').click();
         await page.waitForSelector('#builtinList [data-id="routing"] [aria-checked="false"]');
         assert.deepEqual(posts.at(-1), ["routing", false], where);
-        if (width >= 800) assert.deepEqual(await tabs(page), ["agents", "library", ...keptAt(width).slice(1).filter((k) => k !== "routing" && k !== "groups")], `${where}: Routing gone`);
+        if (width >= 800) assert.deepEqual(await tabs(page), ["agents", "library", "artifacts", ...keptAt(width).slice(1).filter((k) => k !== "routing" && k !== "groups")], `${where}: Routing gone`);
         assert.deepEqual(await viewShown(page), ["view-plugins"], `${where}: Plugins stays`);
         // and Usage: its tab goes
         const usageSwitch = page.locator('#builtinList [data-id="usage"] [role="switch"]');
@@ -266,7 +280,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await usageSwitch.click();
         await page.waitForSelector('#builtinList [data-id="usage"] [aria-checked="false"]');
         assert.deepEqual(posts.at(-1), ["usage", false], where);
-        if (width >= 800) assert.deepEqual(await tabs(page), ["agents", "library", ...keptAt(width).slice(1).filter((k) => k !== "routing" && k !== "groups" && k !== "usage")], `${where}: Usage gone`);
+        if (width >= 800) assert.deepEqual(await tabs(page), ["agents", "library", "artifacts", ...keptAt(width).slice(1).filter((k) => k !== "routing" && k !== "groups" && k !== "usage")], `${where}: Usage gone`);
         assert.deepEqual(await viewShown(page), ["view-plugins"], `${where}: Plugins stays`);
         // Discover brings the search back
         await pluginTabs(page, side).nth(1).click();

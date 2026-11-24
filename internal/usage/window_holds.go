@@ -265,7 +265,7 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 			h.Routed.Tokens += int64(r.Input + r.Output)
 			h.Routed.CacheRead += int64(r.CacheRead)
 			h.Routed.CacheWrite += int64(r.CacheWrite)
-			if pr := priceOf(r); pr != nil {
+			if pr := holdsPrice(qs[s.q].Provider, r, priceOf); pr != nil {
 				h.Routed.Cost += r.CostAt(*pr)
 				h.Routed.BaseCost += r.CostAt(baseRates(*pr))
 			} else {
@@ -321,6 +321,35 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 	return out
 }
 
+// holdsPrice is what a call weighs in the whole of a window of card's: its
+// API price (priceOf), except where card is a ChatGPT plan's (Codex) and
+// OpenAI says how fast the plan's included usage goes in the call's tier
+// (catalog.PlanTierTimes): there it is the Standard price that many times
+// over. A Fast or Ultrafast call priced at its API rate while it drew the
+// window down faster made the whole read smaller the more of them there
+// were (mu33410 on X: GPT-6.2 Ultrafast is 3x in the API, 6x of the plan).
+func holdsPrice(card string, r Record, priceOf func(Record) *catalog.Price) *catalog.Price {
+	tier := r.billedTier()
+	if card != "codex" || tier == "" {
+		return priceOf(r)
+	}
+	for _, m := range []string{strings.TrimSpace(r.Served), r.Model} {
+		x, ok := catalog.PlanTierTimes(m, tier)
+		if m == "" || !ok {
+			continue
+		}
+		std := r
+		std.TierAsked, std.TierSent, std.TierServed = "", "", ""
+		pr := priceOf(std)
+		if pr == nil {
+			return nil
+		}
+		v := pr.Times(x)
+		return &v
+	}
+	return priceOf(r)
+}
+
 // baseRates is pr without its long-context tiers: every call at the base
 // rates however large its input (WindowHolds.BaseCost, #5861). A peak
 // hour's price is kept, as that is what the vendor's base rate is then.
@@ -365,7 +394,7 @@ func apiPricer() func(Record) *catalog.Price {
 		}
 		id := r.priceID()
 		tier := r.billedTier()
-		k := [5]string{id, r.Model, served, r.Effort, tier}
+		k := [5]string{id, r.Model, served, r.Effort, r.tierKey(tier, served)}
 		if pr, ok := prices[k]; ok {
 			return pr
 		}
@@ -383,7 +412,7 @@ func apiPricer() func(Record) *catalog.Price {
 			pr = one(id, served)
 		}
 		// a Fast call is worth Fast's API price (Pricer)
-		pr = tierPriced(pr, tier, served, r.Model)
+		pr = tierPriced(pr, tier, r.Time, served, r.Model)
 		prices[k] = pr
 		return pr
 	}

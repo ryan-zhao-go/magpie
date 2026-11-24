@@ -124,6 +124,11 @@ type Settings struct {
 	// westernUnits, which asked for K/M/B: what that chose is now the
 	// default, so an old file's is left unread.
 	ChineseUnits bool `json:"chineseUnits,omitempty"`
+	// InUncached keeps the Requests list's In at the vendor's own input,
+	// what the prompt cache neither read nor wrote, also where a narrow
+	// window leaves the cache columns out and In otherwise says the whole
+	// prompt (01e13f0e0; JonahFu on X, who wanted In as it was).
+	InUncached bool `json:"inUncached,omitempty"`
 	// DayStart is the hour a day starts at in usage: 0 is midnight, and 1 to
 	// 6 count the small hours before it with the day before (ssharpcc on X,
 	// who codes past 1am). The Usage page, its daily cards and the gateway
@@ -238,9 +243,14 @@ type Settings struct {
 	RedactModelName  string             `json:"redactModelName,omitempty"`
 	RedactModelOff   bool               `json:"redactModelOff,omitempty"`
 	RedactModelAuto  bool               `json:"redactModelAuto,omitempty"`
-	RedactPersonal   bool               `json:"redactPersonal,omitempty"`
-	RedactKinds      map[string]bool    `json:"redactKinds,omitempty"`
-	RedactWords      []string           `json:"redactWords,omitempty"`
+	// RedactModelDir is the folder the local models are downloaded into
+	// (pii.Root), an absolute path on this computer, so a sync never
+	// carries it; "" is magpie's cache, as before (MetalHqa on X: the
+	// models filled his C: drive).
+	RedactModelDir string          `json:"redactModelDir,omitempty"`
+	RedactPersonal bool            `json:"redactPersonal,omitempty"`
+	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
+	RedactWords    []string        `json:"redactWords,omitempty"`
 	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
 	// Discord); off, the default, a word is matched as written.
 	RedactWordsAnyCase bool `json:"redactWordsAnyCase,omitempty"`
@@ -322,6 +332,11 @@ type Settings struct {
 	// one that runs it (gateway.hubOnDemand; ArvinCharl on X: the tools
 	// filled the context). This computer's own (KeepOwn).
 	RouterAllTools bool `json:"routerAllTools,omitempty"`
+	// RouterNoCode takes the router's code mode away: on by default, every
+	// agent given the router is also given run_code, which runs a script
+	// that calls its tools and gives back only what the script returns
+	// (gateway.hubCodeOn). This computer's own (KeepOwn).
+	RouterNoCode bool `json:"routerNoCode,omitempty"`
 	// Name is what this magpie is called, said in its web page's browser
 	// tab as "<name> · magpie", to tell several deployed ones apart
 	// (starballl on X). "" is MAGPIE_NAME, else none (InstanceName). This
@@ -372,6 +387,10 @@ type Settings struct {
 	// ClaudeWarmup is CodexWarmup for the Claude accounts, the request
 	// sent through Claude Code.
 	ClaudeWarmup string `json:"claudeWarmup,omitempty"`
+	// AgyWarmup is CodexWarmup for the agy CLI's (Antigravity's) accounts,
+	// each pool of models (Gemini, Claude & GPT) started on its own: a
+	// pool's window starts at the first request to one of its models.
+	AgyWarmup string `json:"agyWarmup,omitempty"`
 	// CodexWarmAt starts each ChatGPT account's 5-hour window at a time of
 	// day of the user's choosing, local "15:04", with the same tiny
 	// request: an account whose 5-hour window isn't running then gets one,
@@ -512,6 +531,13 @@ type Settings struct {
 	// fallbacks take the request. Off, as by default, such an account is
 	// sent requests and Anthropic decides whether extra usage pays.
 	ClaudeNoExtraUsage bool `json:"claudeNoExtraUsage,omitempty"`
+	// ClaudeRegionHold holds a Claude subscription's requests, and the
+	// Claude Code runs magpie starts for its accounts, while the network
+	// way out they would take is in a region Anthropic doesn't list as
+	// supported (internal/egress, @alterxyz4 on X). A way out not known
+	// (the lookup failed) holds nothing. Off, as by default, magpie only
+	// warns.
+	ClaudeRegionHold bool `json:"claudeRegionHold,omitempty"`
 	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
 	// -p` always. Off, as by default, a model request runs in Claude
 	// Code's interactive mode, as a person runs it, and never as -p: the
@@ -637,6 +663,11 @@ type Settings struct {
 	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
 	// ImageWait reads it.
 	ImageTimeout int `json:"imageTimeout,omitempty"`
+	// ImageResolution is the resolution the image MCP asks an image to be
+	// drawn at when the agent names no size of its own (skingstyle48487 on
+	// X): one of ImageResolutions, "" for the model's own. The gateway
+	// asks each vendor for it in its own field (gateway's draw_tier.go).
+	ImageResolution string `json:"imageResolution,omitempty"`
 	// ClassifyTimeout is how long, in seconds, a routing group's classifier
 	// is given to say which intent a turn is (#2934: a Kiro subscription's
 	// haiku needed more than 8, the default then): from 1 to ClassifyTimeoutMost, 0 for
@@ -1132,6 +1163,12 @@ type Settings struct {
 	// or an old one, is not shown until it is ticked. HiddenModels is not
 	// read for such an agent. An agent named with no entries is shown none.
 	PickedModels map[string][]string `json:"pickedModels,omitempty"`
+	// PicksJoin are the agents, by id, shown only the models picked for
+	// them (PickedModels) that take in the models picked for a provider as
+	// well (eiyuuzaki2333 on X): a model ticked in a provider's editor, as
+	// it is added or later, is ticked for them too, so it isn't ticked
+	// twice. Another model that comes later still waits to be ticked.
+	PicksJoin []string `json:"picksJoin,omitempty"`
 	// OwnModelsHidden are the agents, by id, whose pickers leave out the
 	// models the agent reaches on its own, not through magpie (DeepSeek
 	// Harness's own DeepSeek models, #1642): only magpie's are offered, and
@@ -1605,13 +1642,16 @@ var (
 	Currencies = []string{"usd", "cny", CurrencyByProvider}
 	// TotalCurrencies are TotalCurrency's values, "" being usd.
 	TotalCurrencies = []string{"usd", "cny"}
-	// Warmups are CodexWarmup's and ClaudeWarmup's values, off as "".
+	// Warmups are CodexWarmup's, ClaudeWarmup's and AgyWarmup's values,
+	// off as "".
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
 	TrayEvery = []int{1, 3, 5, 10, 30}
 	// UpdateChannels are UpdateChannel's values: every version, Daily,
 	// Stable.
 	UpdateChannels = []string{"", UpdateDaily, UpdateStable}
+	// ImageResolutions are ImageResolution's values; "" is the model's own
+	ImageResolutions = []string{"", "1K", "2K", "4K"}
 	// UpdateEveries are UpdateEvery's values, in minutes.
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
@@ -1771,11 +1811,32 @@ var CompactAgents = []string{"codex", "claude", "grok"}
 
 // ForAgent is s as the agent of that kind reads Long conversations: its
 // own AgentCompact in CompactAt and FullContext, when it has one.
+//
+// Grok Build with none of its own, under magpie's default for every agent
+// (no size typed, so WorkingWindow), runs to the whole window, where Grok
+// Build compacts at a percent of its own (GrokOwnCompact). WorkingWindow
+// is Codex's, what OpenAI tells it for its own models; written into Grok
+// Build as a percent it compacted a 1M model at 27% and a 512K one at 53%
+// (@taktoshilite on X). A size the user typed, for every agent or for
+// Grok Build, still holds. Kigi, a fork of Grok Build, compacts at the
+// same 85% of its own and is told the same way.
 func (s Settings) ForAgent(kind string) Settings {
 	if c, ok := s.AgentCompacts[kind]; ok {
 		s.CompactAt, s.FullContext = c.At, c.Full
+	} else if (kind == "grok" || kind == "kigi") && s.CompactAt == 0 {
+		s.FullContext = true
 	}
 	return s
+}
+
+// GrokOwnCompact says Grok Build runs to the whole window only because it
+// has no Long conversations of its own and every agent's is magpie's
+// default (ForAgent): it compacts where Grok Build itself does, 85% of the
+// window unless the user's [session] says otherwise (grok-build's
+// DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT; xAI's own models come with 80).
+func (s Settings) GrokOwnCompact() bool {
+	_, own := s.AgentCompacts["grok"]
+	return !own && s.CompactAt == 0 && !s.FullContext
 }
 
 // Compact is where a conversation on a longer window is compacted when
@@ -1824,7 +1885,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.NoAccountDiscovery = cur.NoAccountDiscovery
 	s.LAN, s.AllowIPs, s.MTLS, s.HTTPS = cur.LAN, cur.AllowIPs, cur.MTLS, cur.HTTPS
 	s.DesktopGateway = cur.DesktopGateway // an address of this computer
-	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
+	s.RouterNote, s.RouterAllTools, s.RouterNoCode = cur.RouterNote, cur.RouterAllTools, cur.RouterNoCode
 	s.Name = cur.Name // what this magpie is called
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
@@ -1832,6 +1893,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.PanelShortcut = cur.PanelShortcut
 	s.RedactModel, s.RedactModelName, s.RedactModelScore = cur.RedactModel, cur.RedactModelName, cur.RedactModelScore
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
+	s.RedactModelDir = cur.RedactModelDir // a folder of this computer's
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 	s.AgentsHere = cur.AgentsHere
@@ -2285,6 +2347,11 @@ type SessionReads struct {
 	Asked  bool            `json:"asked"`
 	All    bool            `json:"all,omitempty"`
 	Agents map[string]bool `json:"agents,omitempty"`
+	// Kept: the agents turned off one by one (Keep off, Settings ›
+	// Privacy), not only left off among the first choice's list. An agent
+	// that is off, found here and not kept is asked about once more
+	// (baysonfox on X: Antigravity 2.0 left off beside agy CLI).
+	Kept map[string]bool `json:"kept,omitempty"`
 }
 
 // Reads says whether agent's session files may be read.
@@ -2426,6 +2493,18 @@ func SetRouterAllTools(on bool) error {
 	return save(s, true)
 }
 
+// SetRouterNoCode sets RouterNoCode alone, from what the file holds now.
+// A settings file that can't be read is left as it is, with the error.
+func SetRouterNoCode(off bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.RouterNoCode = off
+	return save(s, true)
+}
+
 // TakeStable puts UpdateChannel on Stable when no channel is set, from
 // what the file holds now: a fresh install of the Stable version (the
 // site's Stable download) stays on Stable. A channel already set is the
@@ -2551,6 +2630,15 @@ func UseDefaultRedactModel(name string) (bool, error) {
 	return true, save(s, false)
 }
 
+// SetRedactModelDir keeps dir as the folder the local models are kept in;
+// "" is magpie's cache.
+func SetRedactModelDir(dir string) error {
+	defer lockFile()()
+	s := load()
+	s.RedactModelDir = dir
+	return save(s, false)
+}
+
 // SetRedactModelName keeps the local model the user picked while it is
 // off, for turning it on.
 func SetRedactModelName(name string) error {
@@ -2636,6 +2724,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if !slices.Contains(Warmups, s.ClaudeWarmup) {
 		return fmt.Errorf("claude warm-up must be off, week or all, not %q", s.ClaudeWarmup)
 	}
+	if !slices.Contains(Warmups, s.AgyWarmup) {
+		return fmt.Errorf("agy warm-up must be off, week or all, not %q", s.AgyWarmup)
+	}
 	for _, at := range slices.Concat(s.CodexWarmAts, s.ClaudeWarmAts) {
 		if _, _, ok := Clock(at); !ok {
 			return fmt.Errorf("a warm-up's time of day must look like 06:00, not %q", at)
@@ -2665,6 +2756,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	}
 	if s.ImageTimeout < 0 || s.ImageTimeout > ImageTimeoutMost {
 		return fmt.Errorf("image generation is given from 1 to %d minutes, or 0 for %d, not %d", ImageTimeoutMost, ImageTimeoutDefault, s.ImageTimeout)
+	}
+	if !slices.Contains(ImageResolutions, s.ImageResolution) {
+		return fmt.Errorf("an image is drawn at 1K, 2K, 4K or the model's own resolution (empty), not %q", s.ImageResolution)
 	}
 	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
 		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)
@@ -2973,6 +3067,9 @@ func (s Settings) normal() Settings {
 	}
 	if s.ClaudeWarmup == "off" {
 		s.ClaudeWarmup = ""
+	}
+	if s.AgyWarmup == "off" {
+		s.AgyWarmup = ""
 	}
 	if s.TrayUsageEvery == 0 {
 		s.TrayUsageEvery = 3

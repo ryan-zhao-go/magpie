@@ -101,6 +101,7 @@ var featured = []MarketServer{
 	visionServer(),
 	memoryServer(),
 	sessionsServer(),
+	artifactsServer(),
 	evermeServer(),
 	nowledgeServer(),
 	remoteServer("context7", "Context7", "Upstash", gh("upstash"), "https://mcp.context7.com/mcp",
@@ -149,6 +150,8 @@ var featured = []MarketServer{
 		"Projects, deployments and logs on Vercel, and its documentation.", true),
 	remoteServer("neon", "Neon", "Neon", gh("neondatabase"), "https://mcp.neon.tech/mcp",
 		"Serverless Postgres on Neon: projects, branches and SQL.", true),
+	remoteServer("coderabbit", "CodeRabbit", "CodeRabbit", gh("coderabbitai"), "https://mcp.coderabbit.ai/",
+		"CodeRabbit's reviews, pull requests, coding tasks and Triage, as you. For an organization in the EU region, edit the address to https://mcp.eu.coderabbit.ai/.", true),
 	remoteServer("cloudflare-docs", "Cloudflare Docs", "Cloudflare", gh("cloudflare"), "https://docs.mcp.cloudflare.com/mcp",
 		"Search Cloudflare's documentation.", false),
 	remoteServer("microsoft-learn", "Microsoft Learn", "Microsoft", gh("microsoft"), "https://learn.microsoft.com/api/mcp",
@@ -329,6 +332,7 @@ var homepages = map[string]string{
 	"stripe":          "https://docs.stripe.com/mcp",
 	"vercel":          "https://vercel.com/docs/mcp/vercel-mcp",
 	"neon":            "https://neon.com/docs/ai/neon-mcp-server",
+	"coderabbit":      "https://docs.coderabbit.ai/api/mcp",
 	"cloudflare-docs": "https://github.com/cloudflare/mcp-server-cloudflare",
 	"microsoft-learn": "https://github.com/MicrosoftDocs/mcp",
 	"huggingface":     "https://huggingface.co/settings/mcp",
@@ -458,7 +462,7 @@ func serverKey(s *Server) string {
 	if s.Remote() {
 		return strings.TrimSuffix(strings.ToLower(s.URL), "/")
 	}
-	if len(s.Args) == 2 && s.Args[0] == "mcp" && (s.Args[1] == "image" || s.Args[1] == "browser" || s.Args[1] == "search" || s.Args[1] == "vision" || s.Args[1] == "memory" || s.Args[1] == "sessions") {
+	if len(s.Args) == 2 && s.Args[0] == "mcp" && (s.Args[1] == "image" || s.Args[1] == "browser" || s.Args[1] == "search" || s.Args[1] == "vision" || s.Args[1] == "memory" || s.Args[1] == "sessions" || s.Args[1] == "artifacts") {
 		return "magpie mcp " + s.Args[1] // magpie's own, wherever its binary is
 	}
 	uv := progName(s.Command) == "uvx"

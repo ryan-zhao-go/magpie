@@ -161,6 +161,15 @@ node --test --test-concurrency=1 internal/gui/tests/gateway-caller-keys.test.cjs
 
 ## Other Browser Regressions
 
+`artifacts-page.test.cjs` checks Work › Artifacts (docs/subsystems/artifacts.md):
+its button after Library's and gone with the Library off, a row per
+artifact newest first naming the agent and, with more than one, its
+versions; a click opens the newest, the menu copies its link, opens an
+earlier version from the app's menu (none with one version) and deletes it
+after asking, with no click opening the row twice. None says so, and a
+find field shows from 8. Every language, both engines, a window at 1000
+and 560 and a browser at 420, with no sideways scroll and the API faked.
+
 `mask-alert.test.cjs` checks Insights › Masking's Masking alert (Must2333 on
 X): after the page's list and not in Settings › Usage (nb5p on Discord), Off
 to begin with; On saves `maskAlert`, another setting saved later keeps it,
@@ -549,6 +558,14 @@ first stop, a level picked is posted for that tier's `<tier>_effort` alone and
 named in the square's title, and the session's effort stays. Its subagents'
 effort is on the Subagents row, not a square, and a Claude Code not through
 magpie has no levels, no square and no effort entries.
+
+`claude-effort-max.test.cjs` checks New sessions' effort in Claude Code's
+Details set to max (@daix91 on X): its title ends with the line that max is
+fixed in Claude Code's environment, so /effort can't change it, and nothing
+new shows on the page; another level picked in the slider takes the line out
+at once and in the row drawn again, and max picked puts it back. Chromium
+and WebKit, five languages, 1100 and 560 wide, no sideways scroll; the API
+is faked. Run with `node --test internal/gui/tests/claude-effort-max.test.cjs`.
 
 `claude-subagent-effort-row.test.cjs` draws Claude Code's subagent effort in
 Chromium and WebKit, English and Chinese, at 1100px and 560px: it is at the
@@ -1211,6 +1228,14 @@ at least 5em, at 420 wide the long names are shortened while no bar is under
 5em and nothing runs past its card, and wide again the names are whole; in
 Chromium and WebKit, English and Chinese.
 
+`usage-cards-steady.test.cjs` opens Usage › Overview with eight allowance
+cards, most still being read (`X-Magpie-Reading`), wheels down and back up
+to a card in the middle, then lets the reads and the curves' history in
+400ms apart. The card being read must not move a pixel in any frame;
+opened again with the heights known, no card in sight may move. All five
+languages, 1100px and 420px, Chromium and WebKit; the API is faked.
+`MAGPIE_ASSETS` selects older assets for the failing comparison.
+
 `usage-sessions-agents-fit.test.cjs` checks Usage › Sessions with 15 agents
 (#929): the agent filter is a menu button like the model and folder ones, no
 segment per agent; at 860 and 560 wide nothing scrolls sideways and the three
@@ -1512,6 +1537,16 @@ found skill with a byte copy in another agent shows both agents' icons and
 no "differs in"; one that really differs still says so. Chromium and
 WebKit, in English and Chinese, with `/api/plugins` faked.
 
+`library-sections.test.cjs` hides the Library's tabs from Plugins ›
+Built-in (lantian_x on X): the Library row's Sections link opens a menu of
+the tabs, each ticked; unticking Hooks and Environment variables posts the
+plugin's `hide` setting at once and the link says two are hidden; the
+Library page's tabs and, from 1024 points, the sidebar's list leave them
+out, and Hooks, open last, gives way to Instructions. The last tab shown
+can't be hidden and nothing is posted then; nothing but the setting is
+posted at all. Every language, Chromium and WebKit, at 1100, 800 and 420
+points, with the API faked.
+
 `library-problems-hide.test.cjs` opens the Library with Grok Build's
 AGENTS.md failing to stat at every sync (Zachary-wW, #3745), the API
 answering as `library.go` does, the error texts as magpie's own sync gave
@@ -1724,6 +1759,12 @@ never reached the vendor, went on to the next and that the first doesn't
 rest, tagged "proxy not reachable", in English and Chinese, never "an error
 another account wouldn't fix"; picking the request doesn't move the page.
 Chromium and WebKit, API faked.
+
+`proxy-down.test.cjs` opens Settings → Network with the proxy on Auto and
+a system proxy on loopback that nothing listens on (@bitssly on X: a VPN
+app turned off left Windows' proxy at its port). The proxy line names the
+address found and says requests go direct until it runs again, in all five
+languages, at 1100px and 420px, Chromium and WebKit. The API is faked.
 
 `s3-sync.test.cjs` sets up sync to an S3 bucket from Settings (#296). It
 works as follows, in English and Chinese:
@@ -2816,3 +2857,23 @@ tone, #26251E. It checks that the row draws that picture as a mask in the
 text colour, and that it shows in both themes, all five languages, at 980px
 and 420px, in Chromium and WebKit (chen2652). `ARTIFACT_DIR` keeps the row's
 screenshots.
+
+The community badge's shield and the card's counts (star, person, heart,
+downloads) are held level by `icon-text-align.test.cjs`, with every other
+glyph beside words. `plugin-badge-align.test.cjs` is gone (11-23): it
+measured the icon against the words' whole ink, descenders and "/week"
+included, so it asked for a .1em nudge down that sat the person 1.5 device
+px below its count in the real app. Against the digits, headless Chromium
+and WebKit read the same row 0.4 to 1.3px apart by language (each picks
+its own font for the digits), so a screenshot bound of 1px held either way.
+
+## Requests' In without the cache
+
+`ledger-in-uncached.test.cjs` checks Settings › Usage › Advanced › In
+without cache (JonahFu on X): folded and Off at first, in the app and in a
+page served to a browser; On saves `inUncached`, another save keeps it, Off
+saves false, and no click moves the page. With it on, the Requests list's In
+is the vendor's in beside the cache columns and with them left out
+(`.led.tight`), and the header says so; with it off, the whole prompt as
+`ledger-in-whole` has it. Every language, 1100 and 390 wide, Chromium and
+WebKit; the API is faked.

@@ -80,6 +80,23 @@ type PresetDef struct {
 	// A Region's own lists stand over them.
 	Embeddings []string `json:"embeddings,omitempty"`
 	Rerankers  []string `json:"rerankers,omitempty"`
+	// Drawers, Videos, Speakers and Transcribers are the image, video,
+	// text-to-speech and speech-to-text models of a plan that names them
+	// beside its text models (Alibaba's Token Plans), for a preset with no
+	// regions: served on /v1/images, /v1/videos, /v1/audio/speech and
+	// /v1/audio/transcriptions, kept out of agents' model pickers.
+	Drawers      []string `json:"drawers,omitempty"`
+	Videos       []string `json:"videos,omitempty"`
+	Speakers     []string `json:"speakers,omitempty"`
+	Transcribers []string `json:"transcribers,omitempty"`
+	// Searches is the vendor's word that it answers a web search tool
+	// offered on its Anthropic and Responses APIs by itself
+	// (web_search_20250305, web_search), as Provider.Searches is the
+	// user's: a partner that runs them (CoreCode). A provider added from
+	// it searches so with nothing set (PresetSearches). Codex's web.run
+	// is not covered: it asks alpha/search, which only the user's
+	// Provider.Searches sends a relay.
+	Searches bool `json:"searches,omitempty"`
 }
 
 // Region is one base-URL option of a preset that offers several. The first
@@ -113,6 +130,10 @@ type Region struct {
 	Rerankers  []string `json:"rerankers,omitempty"`
 	Drawers    []string `json:"drawers,omitempty"`
 	Videos     []string `json:"videos,omitempty"`
+	// Speakers and Transcribers are its text-to-speech and speech-to-text
+	// models, as PresetDef's.
+	Speakers     []string `json:"speakers,omitempty"`
+	Transcribers []string `json:"transcribers,omitempty"`
 	// Images says which of Models take images, as the vendor's own list
 	// says, for a plan whose /models doesn't list its models: a model
 	// it leaves out is judged as before (models.dev, the user's say).
@@ -162,9 +183,25 @@ var arkPlanImages = map[string]bool{
 }
 
 // alibabaPlanModels are the text models of Alibaba's Token Plan, the same
-// on the Qwen AI platform's and on Bailian's, as their overviews list them.
-var alibabaPlanModels = []string{"auto", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
-	"deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731", "glm-5.3", "glm-5.2"}
+// on the Qwen AI platform's, on Bailian's, on Model Studio's and on Qwen
+// Cloud's, as their overviews list them (read 11-18).
+var alibabaPlanModels = []string{"auto", "qwen4-max", "qwen4-max-preview", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+	"deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731", "glm-5.3", "glm-5.2"}
+
+// The Token Plan's other models, the same on its four hosts, each asked on
+// DashScope's own API at the host's root (gateway: draw_dashscope.go,
+// speech_dashscope.go, video_dashscope.go): image generation on
+// multimodal-generation, video on video-synthesis polled at /api/v1/tasks,
+// speech on audio/tts/SpeechSynthesizer and transcription on
+// multimodal-generation. Its realtime model is on /api-ws/v1/realtime,
+// which /v1/realtime reaches (realtime.go). Qwen Cloud's plan also draws
+// with Qwen-Image 2.0.
+var (
+	alibabaPlanDrawers      = []string{"qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro"}
+	alibabaPlanVideos       = []string{"wan3.0-video", "happyhorse-1.1-t2v", "happyhorse-1.1-i2v", "happyhorse-1.1-r2v"}
+	alibabaPlanSpeakers     = []string{"qwen-audio-3.0-tts-plus"}
+	alibabaPlanTranscribers = []string{"qwen-audio-3.0-asr-flash"}
+)
 
 // presets are ordered as they appear in the picker.
 var presets = []PresetDef{
@@ -232,17 +269,23 @@ var presets = []PresetDef{
 		// a GLM Coding Plan is served at its own OpenAI endpoint: a plan's key
 		// sent to the pay-as-you-go one is told it has no balance. The plan
 		// serves the Responses API at /api/v1 as well: its tool pages give
-		// it for Codex, wire_api = "responses" (#306)
+		// it for Codex, wire_api = "responses" (#306). The plan's models are
+		// looked up in models.dev's catalog of the plan first: a model the
+		// plan has before pay as you go does (GLM-5.4, which takes images;
+		// ApocalypseYun on X) is listed there alone, and read as a text
+		// model of no known window. membershipCatalogs keeps its $0 out of
+		// prices.
 		RegionLabel: "Plan", KeyPlans: true, Regions: []Region{
-			{ID: "api", Name: "Pay as you go", Chat: "https://open.bigmodel.cn/api/paas/v4", Anthropic: "https://open.bigmodel.cn/api/anthropic"},
-			{ID: "coding", Name: "Coding Plan", Chat: "https://open.bigmodel.cn/api/coding/paas/v4", Responses: "https://open.bigmodel.cn/api/v1", Anthropic: "https://open.bigmodel.cn/api/anthropic"},
+			{ID: "api", Name: "Pay as you go", Chat: "https://open.bigmodel.cn/api/paas/v4", Anthropic: "https://open.bigmodel.cn/api/anthropic", Catalog: "zhipuai"},
+			{ID: "coding", Name: "Coding Plan", Chat: "https://open.bigmodel.cn/api/coding/paas/v4", Responses: "https://open.bigmodel.cn/api/v1", Anthropic: "https://open.bigmodel.cn/api/anthropic", Catalog: "zhipuai-coding-plan, zhipuai"},
 		}},
 	{ID: "zai", Name: "Z.ai", Icon: "zai", Kind: KindVendor, Catalog: "zhipuai",
 		Chat: "https://api.z.ai/api/paas/v4", Anthropic: "https://api.z.ai/api/anthropic",
 		Website: "https://z.ai", KeysURL: "https://z.ai/manage-apikey/apikey-list",
+		// the plan's models looked up in its own catalog first, as Zhipu's
 		RegionLabel: "Plan", KeyPlans: true, Regions: []Region{
-			{ID: "api", Name: "Pay as you go", Chat: "https://api.z.ai/api/paas/v4", Anthropic: "https://api.z.ai/api/anthropic"},
-			{ID: "coding", Name: "Coding Plan", Chat: "https://api.z.ai/api/coding/paas/v4", Responses: "https://api.z.ai/api/v1", Anthropic: "https://api.z.ai/api/anthropic"},
+			{ID: "api", Name: "Pay as you go", Chat: "https://api.z.ai/api/paas/v4", Anthropic: "https://api.z.ai/api/anthropic", Catalog: "zhipuai"},
+			{ID: "coding", Name: "Coding Plan", Chat: "https://api.z.ai/api/coding/paas/v4", Responses: "https://api.z.ai/api/v1", Anthropic: "https://api.z.ai/api/anthropic", Catalog: "zai-coding-plan, zhipuai"},
 		}},
 	{ID: "minimax", Name: "MiniMax", Icon: "minimax-color", Kind: KindVendor, Catalog: "minimax",
 		Chat: "https://api.minimax.io/v1", Anthropic: "https://api.minimax.io/anthropic",
@@ -393,8 +436,8 @@ var presets = []PresetDef{
 			{ID: "agent", Name: "Agent Plan", Chat: "https://ark.cn-beijing.volces.com/api/plan/v3", Responses: "https://ark.cn-beijing.volces.com/api/plan/v3", Anthropic: "https://ark.cn-beijing.volces.com/api/plan",
 				Models: arkPlanModels, Images: arkPlanImages,
 				Embeddings: []string{"doubao-embedding-vision"},
-				Drawers:    []string{"doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash"},
-				Videos:     []string{"doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"}},
+				Drawers:    []string{"doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash", "doubao-seedream-5.5"},
+				Videos:     []string{"doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5", "doubao-seedance-2.5-flash"}},
 			{ID: "api", Name: "Pay as you go", Chat: "https://ark.cn-beijing.volces.com/api/v3", Responses: "https://ark.cn-beijing.volces.com/api/v3", Lists: true},
 		},
 		NoList: true},
@@ -420,7 +463,8 @@ var presets = []PresetDef{
 		Chat: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1", Anthropic: "https://token-plan.maas.qianwenaiapi.com/apps/anthropic",
 		Note:    "Qwen AI platform · subscription",
 		Website: "https://platform.qianwenai.com/docs/token-plan/overview", KeysURL: "https://platform.qianwenai.com/home/analytics/token-plan/individual",
-		Models: alibabaPlanModels},
+		Models:  alibabaPlanModels,
+		Drawers: alibabaPlanDrawers, Videos: alibabaPlanVideos, Speakers: alibabaPlanSpeakers, Transcribers: alibabaPlanTranscribers},
 	// Bailian's also answers its decision model, decision-model-preview, on
 	// System One at /compatible-mode/v1/systemone with the same key
 	// (token-plan-decision-model; the personal plan only), so a routing
@@ -430,7 +474,8 @@ var presets = []PresetDef{
 		Decide:  "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
 		Note:    "Alibaba Cloud Bailian · subscription",
 		Website: "https://help.aliyun.com/zh/model-studio/token-plan-overview", KeysURL: "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal",
-		Models: alibabaPlanModels},
+		Models:  alibabaPlanModels,
+		Drawers: alibabaPlanDrawers, Videos: alibabaPlanVideos, Speakers: alibabaPlanSpeakers, Transcribers: alibabaPlanTranscribers},
 	// Alibaba Cloud's international Token Plan, the same plan at the
 	// Singapore host (sk-sp- keys, #2940). Its quota is read like Bailian's,
 	// with the account's AccessKey (alibaba_usage.go).
@@ -438,7 +483,8 @@ var presets = []PresetDef{
 		Chat: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", Anthropic: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
 		Note:    "Alibaba Cloud Model Studio · subscription",
 		Website: "https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-quick-start", KeysURL: "https://modelstudio.console.alibabacloud.com/ap-southeast-1/?tab=globalset#/efm/token_plan",
-		Models: alibabaPlanModels},
+		Models:  alibabaPlanModels,
+		Drawers: alibabaPlanDrawers, Videos: alibabaPlanVideos, Speakers: alibabaPlanSpeakers, Transcribers: alibabaPlanTranscribers},
 	// Qwen Cloud (qwencloud.com) is Alibaba's international Qwen platform,
 	// on keys of its own made at home.qwencloud.com, at
 	// {region}.maas.qwencloudapi.com (docs.qwencloud.com, "Regions and
@@ -451,16 +497,19 @@ var presets = []PresetDef{
 		Chat: "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1", Anthropic: "https://token-plan.maas.qwencloudapi.com/apps/anthropic",
 		Note:    "Qwen Cloud · subscription",
 		Website: "https://docs.qwencloud.com/token-plan/overview", KeysURL: "https://home.qwencloud.com/analytics/token-plan/individual",
-		Models: []string{"auto", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
-			"deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731",
-			"glm-5.3", "glm-5.2"}},
+		Models:  alibabaPlanModels,
+		Drawers: append(slices.Clone(alibabaPlanDrawers), "qwen-image-2.0-pro", "qwen-image-2.0"), Videos: alibabaPlanVideos,
+		Speakers: alibabaPlanSpeakers, Transcribers: alibabaPlanTranscribers},
 	{ID: "qwencloud", Name: "Qwen Cloud", Icon: "qwen-color", Kind: KindVendor, Catalog: "alibaba",
 		Chat: qwenCloudChat("ap-southeast-1"), Anthropic: qwenCloudAnthropic("ap-southeast-1"),
 		Note:    "Qwen Cloud · pay as you go",
 		Website: "https://docs.qwencloud.com/developer-guides/getting-started/regions", KeysURL: "https://home.qwencloud.com/api-keys",
 		Regions: qwenCloudRegions("ap-southeast-1", "us-east-1", "eu-central-1", "ap-northeast-1", "cn-hongkong", "cn-beijing")},
 	{ID: "mistral", Name: "Mistral", Icon: "mistral-color", Kind: KindVendor, Catalog: "mistral",
-		Chat:    "https://api.mistral.ai/v1",
+		Chat: "https://api.mistral.ai/v1",
+		// a Vibe plan's key too (Pro, Student, Team: jtbbtnt54249 on X), got
+		// from the editor's sign-in (mistral_signin.go)
+		Note:    "API key or Vibe plan",
 		Website: "https://console.mistral.ai", KeysURL: "https://console.mistral.ai/api-keys"},
 	// Voyage AI makes embedding and rerank models alone, at
 	// api.voyageai.com/v1/embeddings and /v1/rerank with a Bearer key
@@ -933,6 +982,31 @@ func Preset(id string) *PresetDef {
 		return pr
 	}
 	return partnerPreset(id)
+}
+
+// PresetSearches is whether p, a key+URL provider, searches the web by
+// itself because its preset says so (PresetDef.Searches), at an address
+// of that preset's: one moved to another host by hand is the user's to
+// say. A partner's word holds while it is listed and after, as the
+// provider's other settings from it do (partnerPreset).
+func PresetSearches(p Provider) bool {
+	if p.Account != nil || p.IsPlugin() || p.Preset == "" {
+		return false
+	}
+	pr := Preset(p.Preset)
+	if pr == nil || !pr.Searches {
+		return false
+	}
+	hosts := []string{HostOf(pr.Anthropic), HostOf(pr.Responses)}
+	for _, r := range pr.Regions {
+		hosts = append(hosts, HostOf(r.Anthropic), HostOf(r.Responses))
+	}
+	for _, u := range []string{p.Anthropic, p.Responses} {
+		if h := HostOf(u); h != "" && slices.Contains(hosts, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // builtinPreset is the preset of that id built into magpie, partners'

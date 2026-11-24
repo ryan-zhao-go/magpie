@@ -188,6 +188,7 @@ function fixture(lang, theme, events, options = {}) {
       if (action === "remove-key") keys = keys.filter((v) => v !== k);
       if (action === "on-key" || action === "off-key") k.off = action === "off-key";
       if (action === "admin-key") k.admin = body.admin || undefined;
+      if (action === "memory-key") k.memory = body.memory || undefined;
       if (action === "limit-key") {
         // what a key has used is the fixture's; a new limit starts unused
         const usedOf = (l) => {
@@ -236,6 +237,7 @@ function fixture(lang, theme, events, options = {}) {
         k.maxConcurrency = body.maxConcurrency || undefined;
       }
       if (action === "tier-key") k.serviceTier = body.serviceTier || undefined;
+      if (action === "routing-key") k.routing = body.routing || undefined;
       if (action === "redact-key") k.redact = body.redact === "on" || body.redact === "off" ? body.redact : undefined;
       if (action === "access-key") k.readOnly = body.readOnly || undefined;
       // a key put at a place in the list, as access.Update keeps it;

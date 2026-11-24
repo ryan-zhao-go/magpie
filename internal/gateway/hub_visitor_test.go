@@ -48,7 +48,9 @@ func TestHubKeepsThisComputersOwnServersHere(t *testing.T) {
 		m := readMCP(t, hubPostAt(h, HubMCPAll, addr, toolsList, hdr...))
 		var out []string
 		for _, t := range m.Result.Tools {
-			out = append(out, strings.TrimSuffix(t.Name, hubSep+"do"))
+			if t.Name != hubCodeTool { // the servers given; run_code is the router's own
+				out = append(out, strings.TrimSuffix(t.Name, hubSep+"do"))
+			}
 		}
 		slices.Sort(out)
 		return out
@@ -182,7 +184,9 @@ func TestHubGivesAlmaItsHereOnlyServersNotAPage(t *testing.T) {
 		}
 		var out []string
 		for _, x := range readMCP(t, w).Result.Tools {
-			out = append(out, strings.TrimSuffix(x.Name, hubSep+"do"))
+			if x.Name != hubCodeTool { // the servers given; run_code is the router's own
+				out = append(out, strings.TrimSuffix(x.Name, hubSep+"do"))
+			}
 		}
 		slices.Sort(out)
 		return w.Code, out
@@ -223,5 +227,160 @@ func TestHubGivesAlmaItsHereOnlyServersNotAPage(t *testing.T) {
 	}
 	if got := f.ran(); len(got) != 0 {
 		t.Fatalf("ran for a page: %q", got)
+	}
+}
+
+// Magpie Memory goes through the hub to another computer's caller by a
+// gateway key the user let use it (access.Key.Memory, Niapyaya on X), as
+// /mcp/magpie/memory answers it: listed and run. Another key, the key
+// sent by a web page and the key once memory is taken away aren't given
+// it, and it never runs for them.
+func TestHubGivesMemoryToAKeyLetUseIt(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	t.Setenv("MAGPIE_PUBLIC_URL", "")
+	t.Setenv("MAGPIE_TRUST_PROXY", "")
+	servers := []HubServer{
+		{Name: "magpie-memory", HereOnly: true, Program: true, Memory: true},
+		{Name: "magpie-image", HereOnly: true, Program: true},
+		{Name: "docs"},
+	}
+	var tools []HubTool
+	for _, s := range servers {
+		tools = append(tools, HubTool{Server: s.Name, Tool: "do", Spec: hubSpec("do")})
+	}
+	f := &fakeHub{on: true, tools: map[string][]HubTool{"": tools}, servers: map[string][]HubServer{"": servers}}
+	withHub(t, f)
+	h := lanGuard(New().Handler())
+	keys, secrets := newCaller(t, "Remote box", "Friend")
+	if _, err := access.Update("memory-key", access.Change{Key: keys[0].ID, Memory: true}); err != nil {
+		t.Fatal(err)
+	}
+	const there = "192.0.2.7:4000"
+	listed := func(hdr ...string) []string {
+		t.Helper()
+		m := readMCP(t, hubPostAt(h, HubMCPAll, there, toolsList, hdr...))
+		var out []string
+		for _, t := range m.Result.Tools {
+			if t.Name != hubCodeTool { // the servers given; run_code is the router's own
+				out = append(out, strings.TrimSuffix(t.Name, hubSep+"do"))
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	given := []string{"Authorization", "Bearer " + secrets[0]}
+	other := []string{"Authorization", "Bearer " + secrets[1]}
+	page := append([]string{"Origin", "https://evil.example"}, given...)
+	browser := append([]string{"User-Agent", "Mozilla/5.0 (Macintosh) Chrome/140"}, given...)
+	if got, want := listed(given...), []string{"docs", "magpie-memory"}; !slices.Equal(got, want) {
+		t.Errorf("the key let use memory is given %v, want %v", got, want)
+	}
+	m := readMCP(t, hubPostAt(h, HubMCPAll, there, toolsCall("magpie-memory"+hubSep+"do", `{}`), given...))
+	if m.Error != nil || m.Result.IsError {
+		t.Fatalf("memory for the key let use it: %+v", m)
+	}
+	if got := f.ran(); len(got) != 1 {
+		t.Fatalf("ran %q, want magpie-memory once", got)
+	}
+	if got, want := listed(other...), []string{"docs"}; !slices.Equal(got, want) {
+		t.Errorf("another key is given %v, want %v", got, want)
+	}
+	for _, auth := range [][]string{other, browser} {
+		m := readMCP(t, hubPostAt(h, HubMCPAll, there, toolsCall("magpie-memory"+hubSep+"do", `{}`), auth...))
+		if m.Error == nil && !m.Result.IsError {
+			t.Errorf("memory ran for %v: %+v", auth, m)
+		}
+	}
+	if w := hubPostAt(h, HubMCPAll, there, toolsList, page...); w.Code == http.StatusOK && strings.Contains(w.Body.String(), "magpie-memory") {
+		t.Errorf("a page with the key is given memory: %s", w.Body.String())
+	}
+	if _, err := access.Update("memory-key", access.Change{Key: keys[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := listed(given...), []string{"docs"}; !slices.Equal(got, want) {
+		t.Errorf("once taken away, the key is given %v, want %v", got, want)
+	}
+	if got := f.ran(); len(got) != 1 {
+		t.Fatalf("memory ran for a caller not given it: %q", got)
+	}
+}
+
+// A caller not given some of the servers is told in initialize which, why,
+// and what lets them through (Passings_z on X: a held key from the host
+// of a Docker magpie was given 54 of 157 tools and told nothing); a call
+// of one by name says the same. A server the key may not use at all
+// (access.Key.MCP) is only counted, never named. A caller given every
+// server is told nothing.
+func TestHubSaysWhatItHoldsBack(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	t.Setenv("MAGPIE_PUBLIC_URL", "")
+	t.Setenv("MAGPIE_TRUST_PROXY", "")
+	servers := []HubServer{
+		{Name: "magpie-browser", HereOnly: true, Program: true, Keyed: true},
+		{Name: "magpie-image", HereOnly: true, Program: true},
+		{Name: "magpie-memory", Program: true, Memory: true},
+		{Name: "shell", Program: true},
+		{Name: "fs", Program: true},
+		{Name: "docs"},
+	}
+	var tools []HubTool
+	for _, s := range servers {
+		tools = append(tools, HubTool{Server: s.Name, Tool: "do", Spec: hubSpec("do")})
+	}
+	f := &fakeHub{on: true, tools: map[string][]HubTool{"": tools}, servers: map[string][]HubServer{"": servers}}
+	withHub(t, f)
+	h := lanGuard(New().Handler())
+	keys, secrets := newCaller(t, "Full", "Narrow", "Docs")
+	if _, err := access.Update("models-key", access.Change{Key: keys[1].ID, Models: []string{"some/model"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := access.Update("mcp-key", access.Change{Key: keys[2].ID, MCP: []string{"docs"}}); err != nil {
+		t.Fatal(err)
+	}
+	const there = "192.0.2.7:4000"
+	const init = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`
+	say := func(addr string, hdr ...string) string {
+		t.Helper()
+		var m struct{ Result struct{ Instructions string } }
+		if err := json.Unmarshal(hubPostAt(h, HubMCPAll, addr, init, hdr...).Body.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m.Result.Instructions
+	}
+	auth := func(i int) []string { return []string{"Authorization", "Bearer " + secrets[i]} }
+	if s := say(here); strings.Contains(s, "Not given") || strings.Contains(s, "left out") {
+		t.Errorf("this computer is told of servers held back: %q", s)
+	}
+	narrow := say(there, auth(1)...)
+	for _, want := range []string{
+		"Not given to this caller: shell, fs. " + "They run as programs on the computer magpie runs on, and this caller's gateway key, from another computer, has a model, account or spend limit. A key with no such limit, or a connection from that computer, is given them.",
+		"Not given to this caller: magpie-image. " + "It acts as the user of the computer magpie runs on, so only a caller on that computer is given it.",
+		"Not given to this caller: magpie-memory. " + "A gateway key from another computer is given it only when its owner lets the key use memory.",
+	} {
+		if !strings.Contains(narrow, want) {
+			t.Errorf("the held key isn't told %q:\n%s", want, narrow)
+		}
+	}
+	full := say(there, auth(0)...)
+	if strings.Contains(full, "Not given to this caller: shell") || !strings.Contains(full, "Not given to this caller: magpie-image. ") {
+		t.Errorf("a full key from there is told:\n%s", full)
+	}
+	docs := say(there, auth(2)...)
+	if !strings.Contains(docs, "may use only some MCP servers here; 5 more are left out.") {
+		t.Errorf("the docs key isn't told how many are left out:\n%s", docs)
+	}
+	for _, s := range servers[1:5] {
+		if strings.Contains(docs, s.Name) {
+			t.Errorf("the docs key is told the name of %s, which it may not use:\n%s", s.Name, docs)
+		}
+	}
+	m := readMCP(t, hubPostAt(h, HubMCPAll, there, toolsCall("shell"+hubSep+"do", `{}`), auth(1)...))
+	if m.Error == nil || !strings.Contains(m.Error.Message, "the MCP server shell isn't given to this caller. "+"It runs as a program on the computer magpie runs on, and this caller's gateway key, from another computer, has a model, account or spend limit. A key with no such limit, or a connection from that computer, is given it.") {
+		t.Errorf("a call of shell by the held key: %+v", m.Error)
+	}
+	if got := f.ran(); len(got) != 0 {
+		t.Fatalf("ran for a caller not given them: %q", got)
 	}
 }

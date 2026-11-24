@@ -17,6 +17,7 @@ package gateway
 // isn't asked to go on (prefill.go).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -205,15 +206,21 @@ func saysItsEnd(p provider.Provider, proto provider.Protocol, model string) bool
 // chatTail follows a Chat stream's chunks for a Gemini OpenAI-compatible
 // reply that ended without its finish_reason (saysItsEnd): whether its
 // last chunk counted the usage and whether it made calls. A reply asked
-// whole is read through it too, for whether it said anything (said).
-type chatTail struct{ usage, calls, text bool }
+// whole is read through it too, for whether it said anything (said), and
+// a stream for whether it carried anything at all (void).
+type chatTail struct{ usage, calls, text, thought bool }
 
 func (t *chatTail) see(data []byte) {
 	var v struct {
 		Choices []struct {
 			Delta struct {
-				Content   string            `json:"content"`
-				ToolCalls []json.RawMessage `json:"tool_calls"`
+				Content          string            `json:"content"`
+				Refusal          string            `json:"refusal"`
+				ToolCalls        []json.RawMessage `json:"tool_calls"`
+				FunctionCall     json.RawMessage   `json:"function_call"`
+				ReasoningContent json.RawMessage   `json:"reasoning_content"`
+				Reasoning        json.RawMessage   `json:"reasoning"`
+				ReasoningDetails []json.RawMessage `json:"reasoning_details"`
 			} `json:"delta"`
 			Message struct {
 				Content   string            `json:"content"`
@@ -227,9 +234,27 @@ func (t *chatTail) see(data []byte) {
 	}
 	t.usage = v.Usage != nil && (v.Usage.PromptTokens > 0 || v.Usage.CompletionTokens > 0)
 	for _, c := range v.Choices {
-		t.calls = t.calls || len(c.Delta.ToolCalls) > 0 || len(c.Message.ToolCalls) > 0
-		t.text = t.text || c.Delta.Content != "" || c.Message.Content != ""
+		d := c.Delta
+		t.calls = t.calls || len(d.ToolCalls) > 0 || rawSays(d.FunctionCall) || len(c.Message.ToolCalls) > 0
+		t.text = t.text || d.Content != "" || d.Refusal != "" || c.Message.Content != ""
+		t.thought = t.thought || rawSays(d.ReasoningContent) || rawSays(d.Reasoning) || len(d.ReasoningDetails) > 0
 	}
+}
+
+// rawSays tells whether a JSON value carries something: not left out,
+// null or an empty string.
+func rawSays(raw json.RawMessage) bool {
+	s := string(bytes.TrimSpace(raw))
+	return s != "" && s != "null" && s != `""`
+}
+
+// void tells whether a stream carried nothing at all: no text, no call,
+// no reasoning. One that also never gave a finish_reason is no reply,
+// only its usage frame and [DONE] (Copilot's gemini-4-hydrogen,
+// @yuushabu_buyinn on X: dsh said "Stream ended without finish_reason"),
+// and fails as an empty reply (emptyReply), relayed as translated.
+func (t chatTail) void() bool {
+	return !t.text && !t.calls && !t.thought
 }
 
 // said tells whether the reply said anything an agent shows or acts on:
@@ -477,6 +502,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	// usage frame, which went to Codex as a response.completed with
 	// nothing in it: codealc on X)
 	var voids bool
+	// named: the reply limit the client named, which a void's error
+	// names (a limit asked for in its place, voidRoom, isn't the agent's)
+	named := request.MaxTokens
 	empties := 0 // the times such a reply was asked again here
 	said, stop := false, ""
 	var kept []Event       // the reply's end, while nothing is said in it
@@ -518,6 +546,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			if h, ok := w.(*holdWriter); ok {
 				h.mu.Lock()
 				h.first.hidden = true
+				h.first.summarized = h.first.summarized || ev.Kind == KThink
 				h.mu.Unlock()
 			}
 		case KError:
@@ -698,7 +727,11 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					// the reply over: neither is the read's to fail on
 					serr = nil
 				}
+				// a Chat reply that carried nothing at all but counted
+				// its usage is an empty one (chatTail.void), told below,
+				// not a cut nor one whose finish_reason alone was lost
 				if serr == nil && failed == "" && !ended && !relooped &&
+					!(actual == provider.Chat && tail.void() && tail.usage) &&
 					saysItsEnd(p, actual, model) && r.Context().Err() == nil {
 					// an Anthropic stream that just stopped — no
 					// stop_reason, no message_stop — or a Responses one
@@ -769,7 +802,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				// and an agent told it tries again rather than end its
 				// turn (#667); a reply that said nothing has nothing to
 				// go on from, so it isn't continued
-				failed = p.Name + ": " + emptyReply
+				failed = emptyReplyFailed(p.Name, this)
 				break
 			}
 			if voids && replyCheck(r.Context()) == nil && cutVoid(stop, !said, this.Output, request.MaxTokens) {
@@ -777,7 +810,21 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				// nowhere: its budget is spent, and a second ask at the
 				// same max_tokens would mostly spend it twice over before
 				// the error (#2972, its review)
-				failed = cutVoidFailed(p.Name, request.MaxTokens)
+				if request.MaxTokens <= 0 && s.noteVoid(p, model, this.Output) && r.Context().Err() == nil {
+					// the request named no limit, and the API's own
+					// default cut it: asked again here, once, for the
+					// room the model has (voidRoom), the reasoning the
+					// client has staying and the next try's following it
+					if n := roomedOutput(s.voidRoomOf(p.ID, model), contextOf(p, model), estimate(request)); n > 0 {
+						roomed := *request
+						roomed.MaxTokens, request = n, &roomed
+						before, this = before.plus(this, false), Usage{}
+						kept, stop = nil, ""
+						enc.keepalive()
+						continue
+					}
+				}
+				failed = cutVoidFailed(p.Name, named)
 				break
 			}
 			for _, ev := range kept {

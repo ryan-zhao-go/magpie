@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -424,9 +425,20 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 	// draws nothing magpie can ask for yet. A Responses-only relay (a Codex
 	// backend such as sub2api) has no chat base but serves the images API
 	// under the same root as its Responses endpoint, so it draws all the same.
-	if p.Account != nil || (p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "") {
+	if p.Account != nil || (p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "" && !p.IsVertex()) {
 		return nil
 	}
+	if p.VertexExpress() {
+		// an express-mode key is served Gemini alone, so its Gemini image
+		// models alone draw (#7263)
+		return slices.DeleteFunc(drawersOf(p), func(m catalog.Model) bool { return !vertexDrawsGemini(p, m.ID) })
+	}
+	return drawersOf(p)
+}
+
+// drawersOf is DrawersOf for a provider of keys (or Vertex AI): its plan's,
+// its catalogs', the live lists', and the image models the user named.
+func drawersOf(p provider.Provider) []catalog.Model {
 	out := p.PlanDrawers()
 	if filmsMiniMax(p) {
 		// a MiniMax key's image-01 models, which no list names
@@ -559,9 +571,15 @@ func AutoDrawer() string {
 			cands = append(cands, c)
 		}
 	}
+	// the provider the pick is held to draws while it can (heldPick,
+	// auto_picks.go): a ChatGPT account added later doesn't take it over
+	held := heldPick(slotDrawer)
+	heldDraws := held != "" && slices.ContainsFunc(cands, func(c cand) bool {
+		return providerOfRef(c.ref) == held && !(c.gen && c.key.less(newest))
+	})
 	best, bestCost, bestDate := "", 0.0, ""
 	for _, c := range cands {
-		if c.gen && c.key.less(newest) {
+		if c.gen && c.key.less(newest) || heldDraws && providerOfRef(c.ref) != held {
 			continue
 		}
 		if c.gen && !c.priced && haveFamilyCost {
@@ -571,6 +589,7 @@ func AutoDrawer() string {
 			best, bestCost, bestDate = c.ref, c.cost, c.released
 		}
 	}
+	settlePick(slotDrawer, held, heldDraws, providerOfRef(best))
 	return best
 }
 
@@ -654,10 +673,23 @@ type drawing struct {
 	// text.
 	Extra map[string]any
 	Form  bool
+	// Tier is the resolution asked (1K, 2K, 4K; draw_tier.go): the
+	// request's resolution, or a tier given as size. "" for the model's own,
+	// as with a WIDTHxHEIGHT size, which is the size asked
+	Tier string
+}
+
+// shape is d's size without a tier given as size: a ratio, WIDTHxHEIGHT,
+// or "".
+func (d drawing) shape() string {
+	if tierOf(d.Size) != "" {
+		return ""
+	}
+	return d.Size
 }
 
 // drawingRead are the fields of an images request magpie reads itself.
-var drawingRead = []string{"model", "prompt", "size", "quality", "complexity", "background", "output_format", "response_format", "n", "image", "image[]", "images", "mask", "markup", "user"}
+var drawingRead = []string{"model", "prompt", "size", "quality", "complexity", "background", "output_format", "response_format", "n", "image", "image[]", "images", "mask", "markup", "user", "resolution"}
 
 // extraOf keeps v as one of d's Extra under k, unless magpie reads k.
 func (d *drawing) extraOf(k string, v any) {
@@ -761,7 +793,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			if keyHeld {
 				keeps = groupKeeps(keyWho, g, ms)
 			}
-			t := s.drawingTries(g, ms, keeps, drawsModel)
+			t := s.drawingTries(keyRouted(access.Caller(r.Context()), g), ms, keeps, drawsModel)
 			if len(t) == 0 && keeps != nil {
 				fail(keyGroupRefusal(w, keyWho, d.Model, ms))
 				return
@@ -971,6 +1003,7 @@ func vendorSaid(text string) string {
 // edits take.
 func readDrawing(r *http.Request) (drawing, error) {
 	var d drawing
+	var resolution string
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if ct == "multipart/form-data" {
 		if err := r.ParseMultipartForm(64 << 20); err != nil {
@@ -987,6 +1020,7 @@ func readDrawing(r *http.Request) (drawing, error) {
 		d.N, _ = strconv.Atoi(get("n"))
 		d.Complexity = get("complexity")
 		d.Form = true
+		resolution = get("resolution")
 		for k := range f.Value {
 			d.extraOf(k, get(k))
 		}
@@ -1032,11 +1066,15 @@ func readDrawing(r *http.Request) (drawing, error) {
 			Mask           json.RawMessage `json:"mask"`
 			Markup         json.RawMessage `json:"markup"`
 			ResponseFormat string          `json:"response_format"`
+			Resolution     any             `json:"resolution"`
 		}
 		if err := json.Unmarshal(body, &in); err != nil {
 			return d, fmt.Errorf("the request isn't JSON: %v", err)
 		}
 		d = drawing{Model: in.Model, Prompt: in.Prompt, Size: in.Size, Quality: in.Quality, Complexity: strings.TrimSpace(in.Complexity), Background: in.Background, Format: in.Format, Want: strings.TrimSpace(in.ResponseFormat), N: in.N}
+		if in.Resolution != nil {
+			resolution = fmt.Sprint(in.Resolution)
+		}
 		var all map[string]any
 		json.Unmarshal(body, &all)
 		for k, v := range all {
@@ -1074,6 +1112,9 @@ func readDrawing(r *http.Request) (drawing, error) {
 	// and takes no prompt
 	if strings.TrimSpace(d.Prompt) == "" && (d.Extra["layer_decomposition"] == nil || len(d.Images) == 0) {
 		return d, errors.New("say what to draw in prompt")
+	}
+	if err := d.settleTier(resolution); err != nil {
+		return d, err
 	}
 	if d.N <= 0 {
 		d.N = 1
@@ -1170,6 +1211,35 @@ func isGoogle(p provider.Provider) bool {
 	return provider.HostOf(p.Base(provider.Chat)) == "generativelanguage.googleapis.com"
 }
 
+// vertexGeminiDrawer is model as Vertex AI's generateContent names it,
+// when p is Vertex AI and model is a Gemini model that draws there
+// (gemini-3.1-flash-image, gemini-nano-banana-2.1): with no google/ or
+// models/ before it, which a user who wrote the id as a relay names it
+// put there (#7263). Such a model draws on
+// …/publishers/google/models/<model>:generateContent at the project, or
+// at the global endpoint for an express-mode key, never on the
+// OpenAI-compatible chat completions Vertex AI serves its partner models
+// on, which answers with no picture magpie can read. A partner model
+// (publisher/model), Claude and an Imagen, which draws on :predict, are
+// not such models; "" and false for every provider but Vertex AI.
+func vertexGeminiDrawer(p provider.Provider, model string) (string, bool) {
+	if !p.IsVertex() {
+		return "", false
+	}
+	bare := strings.TrimPrefix(strings.TrimPrefix(model, "google/"), "models/")
+	if bare == "" || provider.VertexPartner(bare) || provider.VertexClaude(bare) || catalog.ImagesAPI(bare) || !strings.Contains(strings.ToLower(bare), "gemini") {
+		return "", false
+	}
+	return bare, true
+}
+
+// vertexDrawsGemini is whether model draws on Vertex AI's generateContent
+// at p (vertexGeminiDrawer).
+func vertexDrawsGemini(p provider.Provider, model string) bool {
+	_, ok := vertexGeminiDrawer(p, model)
+	return ok
+}
+
 func isOpenRouter(p provider.Provider) bool {
 	return provider.HostOf(p.Base(provider.Chat)) == "openrouter.ai"
 }
@@ -1185,6 +1255,8 @@ func viaFor(p provider.Provider, model string) drawVia {
 		// MiniMax's image_generation, which drawImages asks (rocbomb123 on X)
 		return viaImages
 	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
+		return viaGemini
+	case vertexDrawsGemini(p, model):
 		return viaGemini
 	case p.ModelKind(model) == provider.KindImage:
 		// one the user said is an image model is asked at the images API
@@ -1394,8 +1466,24 @@ func accountRefusedDrawing(code int) bool {
 }
 
 // draw asks the provider for d's images, on the API model draws on there,
-// and on the other when that one isn't served.
+// and on the other when that one isn't served. A drawing asked at a tier
+// the vendor turns away is asked once more at the model's own size
+// (draw_tier.go), so a resolution set in Settings never keeps an image
+// from being drawn.
 func (s *Server) draw(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
+	out, code, err := s.drawAsked(ctx, p, model, d)
+	if tierRefused(d, code, err) && ctx.Err() == nil {
+		plain := d
+		plain.Tier = ""
+		plain.Size = d.shape()
+		if o, c, e := s.drawAsked(ctx, p, model, plain); e == nil {
+			return o, c, e
+		}
+	}
+	return out, code, err
+}
+
+func (s *Server) drawAsked(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
 	// the headers the user gave the image model
 	ctx = provider.WithModel(ctx, p.ID, model)
 	if drawsWorkBuddy(p) {
@@ -1412,6 +1500,11 @@ func (s *Server) draw(ctx context.Context, p provider.Provider, model string, d 
 	}
 	if googleAccount(p) || pluginDrawsGemini(p, model) {
 		return s.drawCodeAssist(ctx, p, model, d)
+	}
+	if vertexDrawsGemini(p, model) {
+		// on generateContent, which an express-mode key, with no chat
+		// completions at all, is served too (#7263)
+		return s.drawGemini(ctx, p, model, d)
 	}
 	if p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "" {
 		return drawn{}, 400, fmt.Errorf("%s can't draw: magpie draws only through an OpenAI-compatible API, and %s has none", p.Name, p.Name)
@@ -1659,12 +1752,10 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	var body []byte
 	var ct, url string
 	m := strings.ToLower(model)
+	size := imagesAPISize(p, model, d)
 	if drawsGrok(p) {
 		// Grok's Imagine API takes an aspect ratio, not a size or a quality
-		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N, "response_format": "b64_json"}
-		if ar := aspectAmong(d.Size, grokAspects); ar != "" {
-			req["aspect_ratio"] = ar
-		}
+		req := grokImagesReq(model, d)
 		if len(d.Images) > 0 {
 			var imgs []map[string]string
 			for _, pic := range d.Images {
@@ -1678,12 +1769,16 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		body, _ = json.Marshal(req)
 	} else if len(d.Images) == 0 {
 		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
-		fields := map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format}
+		fields := map[string]string{"size": size, "quality": d.Quality, "background": d.Background, "output_format": d.Format}
 		if drawsCopilot(p) {
 			// Copilot CLI sends model, prompt, size and quality
-			fields = map[string]string{"size": d.Size, "quality": d.Quality}
+			fields = map[string]string{"size": size, "quality": d.Quality}
 		} else if !drawsCodex(p) {
 			fields["complexity"] = d.Complexity
+		}
+		if p.IsRemoteMagpie() {
+			// the other magpie sends it on in its vendor's own field
+			fields["resolution"] = d.Tier
 		}
 		for k, v := range fields {
 			if v != "" {
@@ -1692,7 +1787,10 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		}
 		// only dall-e gives a URL unless asked; gpt-image turns the field away
 		if strings.Contains(m, "dall-e") || senseNovaDrawer(m) {
-			req["response_format"] = "b64_json"
+			req["response_format"] = imagesFormat(d.Want)
+		}
+		if senseNovaDrawer(m) {
+			senseNovaFields(req, d)
 		}
 		body, _ = json.Marshal(req)
 		ct, url = "application/json", base+"/images/generations"
@@ -1702,9 +1800,10 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		// asked for base64
 		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
 		if senseNovaDrawer(m) {
-			req["response_format"] = "b64_json"
+			req["response_format"] = imagesFormat(d.Want)
+			senseNovaFields(req, d)
 		}
-		for k, v := range map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
+		for k, v := range map[string]string{"size": size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
 			if v != "" {
 				req[k] = v
 			}
@@ -1725,13 +1824,16 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	} else {
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
-		for k, v := range map[string]string{"model": model, "prompt": d.Prompt, "n": strconv.Itoa(d.N), "size": d.Size, "quality": d.Quality, "complexity": d.Complexity, "background": d.Background, "output_format": d.Format} {
+		for k, v := range map[string]string{"model": model, "prompt": d.Prompt, "n": strconv.Itoa(d.N), "size": size, "quality": d.Quality, "complexity": d.Complexity, "background": d.Background, "output_format": d.Format} {
 			if v != "" {
 				mw.WriteField(k, v)
 			}
 		}
 		if strings.Contains(m, "dall-e") {
-			mw.WriteField("response_format", "b64_json")
+			mw.WriteField("response_format", imagesFormat(d.Want))
+		}
+		if p.IsRemoteMagpie() && d.Tier != "" {
+			mw.WriteField("resolution", d.Tier)
 		}
 		field := "image"
 		if len(d.Images) > 1 {
@@ -1781,6 +1883,38 @@ func senseNovaDrawer(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sensenova-u1")
 }
 
+// senseNovaOwn are the fields of SenseNova's images API that OpenAI's
+// hasn't, which a caller can only send beside OpenAI's: watermark (a
+// bool, false for none) and prompt_extend (a bool, true by default), as
+// SenseTime's U1.5 Lite Token Plan page documents them (justforlxz on
+// X: the watermark switch did nothing).
+var senseNovaOwn = []string{"watermark", "prompt_extend"}
+
+// senseNovaFields puts the caller's own SenseNova fields in req, as they
+// came: a form's "false" as the bool SenseNova takes. One the caller
+// didn't send is left to SenseNova's default.
+func senseNovaFields(req map[string]any, d drawing) {
+	for _, k := range senseNovaOwn {
+		if v, ok := d.Extra[k]; ok {
+			if d.Form {
+				v = formValue(k, v, nil)
+			}
+			req[k] = v
+		}
+	}
+}
+
+// imagesFormat is the response_format asked of an images API that answers
+// in a link unless asked otherwise (dall-e, SenseNova's U1): url when the
+// caller asked for url, which is then answered by that link, else
+// b64_json.
+func imagesFormat(want string) string {
+	if strings.EqualFold(want, "url") {
+		return "url"
+	}
+	return "b64_json"
+}
+
 // drawOpenRouterImages asks OpenRouter's dedicated Images API, which accepts
 // reference images as input_references rather than OpenAI's edits multipart.
 func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
@@ -1790,13 +1924,29 @@ func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, 
 	if d.Markup != nil {
 		return drawn{}, http.StatusBadRequest, errors.New("OpenRouter's images API does not support a markup layer")
 	}
+	body, _ := json.Marshal(openRouterImagesReq(model, d))
+	url := strings.TrimRight(p.Base(provider.Chat), "/") + "/images"
+	b, code, err := s.send(ctx, p, url, "application/json", body, true)
+	if err != nil {
+		return drawn{}, code, err
+	}
+	return readImagesAnswer(p, url, b, code)
+}
+
+// openRouterImagesReq is d as OpenRouter's Image API takes it.
+func openRouterImagesReq(model string, d drawing) map[string]any {
 	req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
 	for k, v := range map[string]string{"quality": d.Quality, "background": d.Background, "output_format": d.Format} {
 		if v != "" {
 			req[k] = v
 		}
 	}
-	openRouterSize(req, model, d.Size)
+	openRouterSize(req, model, d.shape())
+	if d.Tier != "" && takesImageSize(model) {
+		// OpenRouter's own field for it (512 to 4K); a model that draws at
+		// 1K alone is asked at its own
+		req["resolution"] = d.Tier
+	}
 	if len(d.Images) > 0 {
 		refs := make([]map[string]any, 0, len(d.Images))
 		for _, pic := range d.Images {
@@ -1804,13 +1954,7 @@ func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, 
 		}
 		req["input_references"] = refs
 	}
-	body, _ := json.Marshal(req)
-	url := strings.TrimRight(p.Base(provider.Chat), "/") + "/images"
-	b, code, err := s.send(ctx, p, url, "application/json", body, true)
-	if err != nil {
-		return drawn{}, code, err
-	}
-	return readImagesAnswer(p, url, b, code)
+	return req
 }
 
 // openRouterSize puts an images API size into req as OpenRouter's Image API
@@ -2025,7 +2169,7 @@ func extOf(mimeType string) string {
 func drawPrompt(d drawing) string {
 	var b strings.Builder
 	b.WriteString(d.Prompt)
-	if r := aspectOf(d.Size); r != "" {
+	if r := aspectOf(d.shape()); r != "" {
 		fmt.Fprintf(&b, "\n\nAspect ratio: %s.", r)
 	}
 	if d.Background == "transparent" {
@@ -2043,8 +2187,8 @@ func (s *Server) drawChat(ctx context.Context, p provider.Provider, model string
 	}
 	req := map[string]any{"model": model, "stream": false, "modalities": []string{"image", "text"},
 		"messages": []map[string]any{{"role": "user", "content": content}}}
-	if r := aspectOf(d.Size); r != "" {
-		req["image_config"] = map[string]string{"aspect_ratio": r}
+	if c := chatImageConfig(model, d); c != nil {
+		req["image_config"] = c
 	}
 	body, _ := json.Marshal(req)
 	url := strings.TrimRight(p.Base(provider.Chat), "/") + "/chat/completions"
@@ -2141,14 +2285,21 @@ func (s *Server) drawGemini(ctx context.Context, p provider.Provider, model stri
 		parts = append(parts, map[string]any{"inlineData": map[string]string{"mimeType": pic.Mime, "data": base64.StdEncoding.EncodeToString(pic.Data)}})
 	}
 	cfg := map[string]any{"responseModalities": []string{"TEXT", "IMAGE"}}
-	if c := imageConfigOf(model, d.Size); c != nil {
+	if c := imageConfigOf(model, d.shape(), d.Tier); c != nil {
 		cfg["imageConfig"] = c
 	}
 	body, _ := json.Marshal(map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}, "generationConfig": cfg})
 	base := strings.TrimSuffix(strings.TrimRight(p.Base(provider.Chat), "/"), "/openai")
 	url := base + "/models/" + provider.GeminiModelPath(model) + ":generateContent"
+	sign := false // AI Studio's key, in x-goog-api-key
+	if bare, ok := vertexGeminiDrawer(p, model); ok {
+		// Vertex AI's project (or express mode's global endpoint), signed
+		// as its chat is: a Google token, or the express key in
+		// x-goog-api-key (#7263)
+		url, sign = p.Base(provider.Gemini)+provider.VertexWholePath(bare), true
+	}
 	return s.eachDrawing(d.N, func() (drawn, int, error) {
-		b, code, err := s.send(ctx, p, url, "application/json", body, false)
+		b, code, err := s.send(ctx, p, url, "application/json", body, sign)
 		if err != nil {
 			return drawn{}, code, err
 		}
@@ -2218,7 +2369,7 @@ func (s *Server) drawCodeAssist(ctx context.Context, p provider.Provider, model 
 		parts = append(parts, Part{Kind: Image, MediaType: pic.Mime, Data: base64.StdEncoding.EncodeToString(pic.Data)})
 	}
 	req := &Request{Messages: []Message{{Role: "user", Parts: parts}}, draws: true}
-	if c := imageConfigOf(model, d.Size); c != nil {
+	if c := imageConfigOf(model, d.shape(), d.Tier); c != nil {
 		// the size and shape the images API asked, in the field a Gemini
 		// client's own imageConfig arrives in, which buildCodeAssistSent
 		// puts in generationConfig
@@ -2335,15 +2486,18 @@ func imageSizeOf(size string) string {
 
 // imageConfigOf is the imageConfig an images API size asks a Gemini image
 // model to draw at: the ratio the size is nearest, with the imageSize
-// beside it when the size asks past the model's 1K default and the model
-// takes one (takesImageSize). nil for none.
-func imageConfigOf(model, size string) map[string]string {
+// beside it when a tier is asked, or the size asks past the model's 1K
+// default, and the model takes one (takesImageSize). nil for none.
+func imageConfigOf(model, size, tier string) map[string]string {
 	c := map[string]string{}
 	if r := aspectOf(size); r != "" {
 		c["aspectRatio"] = r
 	}
-	if s := imageSizeOf(size); s != "" && takesImageSize(model) {
-		c["imageSize"] = s
+	if tier == "" {
+		tier = imageSizeOf(size)
+	}
+	if tier != "" && takesImageSize(model) {
+		c["imageSize"] = tier
 	}
 	if len(c) == 0 {
 		return nil

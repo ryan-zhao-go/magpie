@@ -713,6 +713,8 @@ func searchRoundsBack(msgs []Message, name string) []Message {
 
 func isSearch(p Part) bool { return p.Kind == Search }
 
+func isResult(p Part) bool { return p.Kind == ToolResult }
+
 // claudeSigned is thinking Claude signed, or its redacted_thinking.
 func claudeSigned(p Part) bool {
 	return p.Kind == Thinking && (p.SignedBy == sealAnthropic && p.Signature != "" || p.sealedBy(sealAnthropic))
@@ -1074,12 +1076,21 @@ func withoutSearchCalls(body []byte) []byte {
 }
 
 // mergeTurns joins consecutive messages of the same role, since the
-// Responses API splits an assistant turn into one item per part.
+// Responses API splits an assistant turn into one item per part. A user
+// message joined after tool results is marked where it begins (opens): the
+// message Codex sends next after a turn that ended on its tool results —
+// interrupted, or failed with no answer — is the user's next turn, as a
+// message after a Chat tool message or an Anthropic tool_result message
+// is, and turnIn tells it so.
 func mergeTurns(msgs []Message) []Message {
 	var out []Message
 	for _, m := range msgs {
 		if n := len(out); n > 0 && out[n-1].Role == m.Role && (m.Role == "user" || m.Role == "assistant") {
+			at := len(out[n-1].Parts)
 			out[n-1].Parts = append(out[n-1].Parts, m.Parts...)
+			if m.Role == "user" && len(m.Parts) > 0 && !slices.ContainsFunc(m.Parts, isResult) && slices.ContainsFunc(out[n-1].Parts[:at], isResult) {
+				out[n-1].Parts[at].opens = true
+			}
 			continue
 		}
 		out = append(out, m)
@@ -1547,7 +1558,11 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if r.CacheKey != "" {
 		out["prompt_cache_key"] = r.CacheKey
 	}
-	if r.System != "" {
+	if r.System != "" && provider.InstructionsAfterInput(model) {
+		// GPT-6.2 reads top-level instructions after the input, uncached
+		// every turn: the system prompt goes first in it instead
+		out["input"] = append([]any{provider.DeveloperMessage(r.System)}, input...)
+	} else if r.System != "" {
 		out["instructions"] = r.System
 	}
 	if r.MaxTokens > 0 {
@@ -1565,8 +1580,9 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if r.Fast && (host == "chatgpt.com" || host == "api.openai.com") {
 		out["service_tier"] = "priority"
 	}
-	// Ultrafast only the ChatGPT backend offers
-	if r.Ultrafast && host == "chatgpt.com" {
+	// Ultrafast the ChatGPT backend offers, and OpenAI's API on the models
+	// its Ultrafast mode names (OoopsHh on X); elsewhere it goes as Fast
+	if r.Ultrafast && (host == "chatgpt.com" || host == "api.openai.com" && provider.OpenAIUltra(model)) {
 		out["service_tier"] = "ultrafast"
 	}
 	if r.OwnTier && r.Tier != "" {
